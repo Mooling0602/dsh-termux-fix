@@ -67,6 +67,27 @@ info "compiling koffi (1-2 minutes)"
 # So probe the same way cnoke does, and surface cmake's own stderr when it
 # fails — that is what actually identifies the problem.
 if ! cmake_probe=$(cmake --version 2>&1); then
+    # A dynamic-linker failure naming a missing C++ symbol means cmake and
+    # libc++ are out of step: cmake was built against a newer libc++ than the
+    # one installed. Reinstalling cmake cannot fix that, because cmake is not
+    # the outdated package — libc++ is. Seen in issue #2:
+    #
+    #   CANNOT LINK EXECUTABLE "cmake": cannot locate symbol
+    #   "_ZNSt6__ndk113__hash_memoryEPKvm" referenced by ".../bin/cmake"
+    #
+    # (__hash_memory was added to libc++ in release 21, so an older libc++
+    # than the cmake build expects produces exactly this.)
+    if printf '%s' "$cmake_probe" | grep -qE 'cannot locate symbol|CANNOT LINK EXECUTABLE'; then
+        die "cmake cannot start: it needs a newer libc++ than is installed.
+       This is a partial upgrade, not a broken cmake — reinstalling cmake
+       will not help, because libc++ is the outdated package.
+
+         $(printf '%s' "$cmake_probe" | head -2 | tr -s ' \n' ' ')
+
+       Fix: pkg upgrade      (upgrades libc++ and cmake together)
+       Then re-run: ./install.sh --step 1"
+    fi
+
     die "cmake is present but not runnable — cnoke will refuse to build.
        'cmake --version' failed with:
          $(printf '%s' "$cmake_probe" | head -3 | tr '\n' ' ')

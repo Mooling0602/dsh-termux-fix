@@ -244,12 +244,35 @@ err cmake is present but not runnable — cnoke will refuse to build.
        If it is installed but broken: pkg reinstall cmake
 ```
 
+There is a **third** case, and it needs a different fix. If `cmake --version`
+fails at load time with a missing C++ symbol:
+
+```
+CANNOT LINK EXECUTABLE "cmake": cannot locate symbol
+  "_ZNSt6__ndk113__hash_memoryEPKvm" referenced by ".../bin/cmake"
+```
+
+then cmake and libc++ are **out of step** — cmake was built against a newer
+libc++ than the one installed. `__hash_memory` was added to libc++ in release
+21, so an older libc++ produces exactly this. **Reinstalling cmake cannot fix
+it**, because cmake is not the outdated package; libc++ is. Upgrade both:
+
+```bash
+pkg upgrade
+```
+
+This is a partial upgrade, not a broken package. It is common when a previous
+`pkg upgrade` was interrupted, or when cmake was installed on its own against a
+mirror that had moved ahead of the installed libc++.
+
 To diagnose by hand:
 
 ```bash
-command -v cmake     # where it resolves — watch for a stale copy earlier in PATH
-cmake --version      # what cnoke actually checks; non-zero means "unusable"
-pkg reinstall cmake  # usually fixes an installed-but-broken cmake
+command -v cmake        # where it resolves — watch for a stale copy earlier in PATH
+cmake --version         # what cnoke actually checks; non-zero means "unusable"
+ldd "$PREFIX/bin/cmake" # which libc++ it will actually load
+pkg upgrade             # fix a cmake/libc++ version skew
+pkg reinstall cmake     # only if cmake itself is damaged and libc++ is current
 ```
 
 `--check` distinguishes the two states:

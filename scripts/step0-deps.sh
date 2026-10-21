@@ -32,14 +32,27 @@ curl:downloading sources and releases (steps 2, 6)
 # available" — which sounds like a missing package. Verify the tools we can
 # actually run, so the failure is caught here where the fix is obvious.
 verify_runnable() {
-    local broken=() tool
+    local broken=() skew=() tool out
     for tool in cmake clang git; do
         command -v "$tool" >/dev/null 2>&1 || continue
-        if ! "$tool" --version >/dev/null 2>&1; then
+        if ! out=$("$tool" --version 2>&1); then
             broken+=("$tool")
             dim "  $tool is installed but '$tool --version' failed"
+            # Distinguish a partial upgrade from a damaged package: these tools
+            # are built against libc++, and a libc++ older than the tool needs
+            # fails at load time with a missing C++ symbol. Reinstalling the
+            # tool alone cannot fix that (issue #2).
+            printf '%s' "$out" | grep -qE 'cannot locate symbol|CANNOT LINK EXECUTABLE' \
+                && skew+=("$tool")
         fi
     done
+
+    if [ ${#skew[@]} -gt 0 ]; then
+        warn "${skew[*]} cannot start: they need a newer libc++ than is installed"
+        dim "  this is a partial upgrade — libc++ is the outdated package" >&2
+        dim "  fix: pkg upgrade   (not 'pkg reinstall ${skew[0]}')" >&2
+        exit 1
+    fi
 
     if [ ${#broken[@]} -gt 0 ]; then
         warn "${broken[*]} installed but not runnable"

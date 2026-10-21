@@ -3,6 +3,27 @@
 All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.5.0] — 2026-10-21
+
+### Fixed
+
+- **Corrected the advice for a cmake/libc++ version skew.** The previous entry
+  told users to run `pkg reinstall cmake` when `cmake --version` failed. That is
+  wrong for the most common cause: if the failure is a missing C++ symbol
+  (`cannot locate symbol "_ZNSt6__ndk113__hash_memoryEPKvm"`), cmake is fine and
+  the outdated package is **libc++** — `__hash_memory` only arrived in libc++ 21.
+  Reinstalling cmake cannot help; `pkg upgrade` upgrades both together.
+  Reported and confirmed in issue #2.
+
+### Added
+
+- Step 0 and step 1 recognise the dynamic-linker signature
+  (`CANNOT LINK EXECUTABLE` / `cannot locate symbol`) and report it as a partial
+  upgrade with the `pkg upgrade` remedy, instead of the generic
+  "installed but not runnable" text.
+- Troubleshooting now separates three distinct causes for the same cnoke error:
+  not installed, installed but damaged, and installed but behind libc++.
+
 ## [1.4.0] — 2026-10-21
 
 ### Fixed

@@ -220,12 +220,32 @@ err cmake is present but not runnable — cnoke will refuse to build.
        If it is installed but broken: pkg reinstall cmake
 ```
 
+还有**第三种**情况，修法不一样。如果 `cmake --version` 在加载阶段就失败，报缺 C++ 符号：
+
+```
+CANNOT LINK EXECUTABLE "cmake": cannot locate symbol
+  "_ZNSt6__ndk113__hash_memoryEPKvm" referenced by ".../bin/cmake"
+```
+
+那是 cmake 和 libc++ **版本不同步**——cmake 是对着比现装更新的 libc++ 编译的。
+`__hash_memory` 是 libc++ 21 才加入的符号，所以 libc++ 偏旧就会出现这句。
+**重装 cmake 修不好**，因为过时的不是 cmake，是 libc++。两个一起升：
+
+```bash
+pkg upgrade
+```
+
+这属于「部分升级」，不是包坏了。常见于上次 `pkg upgrade` 被中断，或者单独
+`pkg install cmake` 时镜像已经前进、而本机 libc++ 还停在旧版本。
+
 手工排查：
 
 ```bash
-command -v cmake     # 解析到哪——注意 PATH 靠前位置有没有旧副本
-cmake --version      # 这才是 cnoke 真正检查的；非 0 就是不可用
-pkg reinstall cmake  # 通常能修好「装了但坏了」的 cmake
+command -v cmake        # 解析到哪——注意 PATH 靠前位置有没有旧副本
+cmake --version         # 这才是 cnoke 真正检查的；非 0 就是不可用
+ldd "$PREFIX/bin/cmake" # 实际会加载哪个 libc++
+pkg upgrade             # 修 cmake/libc++ 版本不同步
+pkg reinstall cmake     # 仅当 libc++ 是新的、cmake 自身损坏时
 ```
 
 `--check` 会区分这两种状态：
