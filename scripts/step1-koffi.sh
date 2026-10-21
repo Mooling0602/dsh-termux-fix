@@ -52,14 +52,30 @@ esac
 
 info "compiling koffi (1-2 minutes)"
 
-# cnoke shells out to cmake and dies with "CMake does not seem to be available"
-# buried in a stack trace, which then surfaces as the useless top-level
-# "koffi build failed" (issue #1). Check up front so the message is actionable.
-if ! command -v cmake >/dev/null 2>&1; then
-    die "cmake not found — koffi's build frontend needs it. Install it with: pkg install cmake
+# cnoke's checkCMake() decides cmake is usable purely from the exit status of
+# `cmake --version`:
+#
+#     let proc = spawnSync("cmake", ["--version"]);
+#     if (proc.status === 0) { cmake_bin = "cmake" } else { throw ... }
+#
+# When that fails it throws "CMake does not seem to be available" — which reads
+# as "not installed" but also fires when cmake IS installed and merely fails to
+# run (broken link, missing lib, bad PATH entry). Checking `command -v cmake`
+# therefore is not equivalent: it passes for a cmake that cannot execute, and
+# the build fails later with the same misleading message.
+#
+# So probe the same way cnoke does, and surface cmake's own stderr when it
+# fails — that is what actually identifies the problem.
+if ! cmake_probe=$(cmake --version 2>&1); then
+    die "cmake is present but not runnable — cnoke will refuse to build.
+       'cmake --version' failed with:
+         $(printf '%s' "$cmake_probe" | head -3 | tr '\n' ' ')
+
+       If it is genuinely missing:  pkg install cmake
+       If it is installed but broken: pkg reinstall cmake
        Or run: ./install.sh --step 0"
 fi
 
 ( cd "$KBASE" && node ./cnoke.cjs -P . -D src/koffi --prebuild --release >/dev/null ) \
-    || die "koffi build failed (run without --step to see the underlying error)"
+    || die "koffi build failed (see the 'Error:' line above for the underlying cause)"
 ok "compiled"

@@ -81,14 +81,23 @@ check_status() {
 
     status() { printf '  %-34s %s\n' "$1" "$2"; }
 
-    # 0 toolchain — report only what is actually missing, so the line stays
-    # quiet on a healthy install.
-    local missing=''
+    # 0 toolchain — report only what is actually wrong, so the line stays
+    # quiet on a healthy install. Installed-but-unrunnable is called out
+    # separately: dpkg says "installed", but cnoke only cares whether
+    # `cmake --version` exits 0, and reports the mismatch as
+    # "CMake does not seem to be available".
+    local missing='' broken=''
     for pkg in clang cmake make git nodejs tar curl; do
         dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null \
             | grep -q "install ok installed" || missing="$missing $pkg"
     done
-    if [ -z "$missing" ]; then
+    for tool in cmake clang git; do
+        command -v "$tool" >/dev/null 2>&1 || continue
+        "$tool" --version >/dev/null 2>&1 || broken="$broken $tool"
+    done
+    if [ -n "$broken" ]; then
+        status "0 toolchain" "BROKEN:$broken (installed, will not run)"
+    elif [ -z "$missing" ]; then
         status "0 toolchain" "complete"
     else
         status "0 toolchain" "MISSING:$missing"

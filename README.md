@@ -216,11 +216,49 @@ probe picks whichever answers first within 3s. To force one origin, set
 `modelOrigin: https://hf-mirror.com` in the plugin config. Models are fetched on
 first use from the dsh settings page, not by this script.
 
-**`koffi build failed`** — before step 0 existed, this was all you got when
-`cmake` was missing; the real cause (`CMake does not seem to be available`)
-was buried in a cnoke stack trace. Run `./install.sh --step 0` to install the
-toolchain, or `pkg install cmake` directly. `--check` now reports
-`0 toolchain  MISSING: cmake` so you can see it before a build fails.
+**`CMake does not seem to be available`** — this message is misleading. cnoke
+decides cmake is usable from a single test:
+
+```js
+let proc = spawnSync("cmake", ["--version"]);
+if (proc.status === 0) { cmake_bin = "cmake" } else { throw ... }
+```
+
+So it fires in **two different situations**, and only one of them is about a
+missing package:
+
+1. **cmake is not installed** → `pkg install cmake`, or `./install.sh --step 0`.
+2. **cmake is installed but will not run** — a broken upgrade, a missing shared
+   library, or a stale `$PREFIX/bin/cmake` shadowing a working one. `command -v
+   cmake` succeeds here, so presence checks pass and the build fails anyway.
+
+Step 1 now probes exactly what cnoke probes, and prints cmake's own stderr, so
+the second case is no longer disguised as the first:
+
+```
+err cmake is present but not runnable — cnoke will refuse to build.
+       'cmake --version' failed with:
+         CANNOT LINK EXECUTABLE "cmake": library "libcmake.so" not found
+
+       If it is genuinely missing:  pkg install cmake
+       If it is installed but broken: pkg reinstall cmake
+```
+
+To diagnose by hand:
+
+```bash
+command -v cmake     # where it resolves — watch for a stale copy earlier in PATH
+cmake --version      # what cnoke actually checks; non-zero means "unusable"
+pkg reinstall cmake  # usually fixes an installed-but-broken cmake
+```
+
+`--check` distinguishes the two states:
+
+```
+0 toolchain                        complete
+0 toolchain                        MISSING: cmake
+0 toolchain                        BROKEN: cmake (installed, will not run)
+```
 
 **`upstream layout changed`** — a step script found its anchor a number of times
 other than exactly 1. Upstream moved the code. Do not force it; open an issue

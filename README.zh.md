@@ -193,10 +193,48 @@ dsh 的原子写入用了 `link()`。改用 `bash` 重定向写文件即可。�
 `modelOrigin: https://hf-mirror.com`。模型是在 dsh 设置页首次使用时下载的，
 不由本脚本负责。
 
-**`koffi build failed`** —— 在第 0 步出现之前，缺 `cmake` 时你只会看到这一句，
-真正的原因（`CMake does not seem to be available`）埋在 cnoke 的堆栈里。
-跑 `./install.sh --step 0` 装工具链，或直接 `pkg install cmake`。
-现在 `--check` 会显示 `0 toolchain  MISSING: cmake`，在构建失败之前就能看到。
+**`CMake does not seem to be available`** —— 这句报错有误导性。cnoke 判断 cmake
+可用与否只看一个测试：
+
+```js
+let proc = spawnSync("cmake", ["--version"]);
+if (proc.status === 0) { cmake_bin = "cmake" } else { throw ... }
+```
+
+所以它会在**两种不同情况**下出现，而只有一种是「没装」：
+
+1. **cmake 没装** → `pkg install cmake`，或 `./install.sh --step 0`。
+2. **cmake 装了但跑不起来** —— 升级装坏、缺共享库，或者 `$PREFIX/bin/cmake`
+   是个坏副本盖住了能用的那个。此时 `command -v cmake` 是成功的，所以只检查
+   「在不在」会放行，然后构建照样失败。
+
+第 1 步现在用和 cnoke 完全一样的判据探测，并把 cmake 自己的 stderr 打出来，
+第二种情况不会再伪装成第一种：
+
+```
+err cmake is present but not runnable — cnoke will refuse to build.
+       'cmake --version' failed with:
+         CANNOT LINK EXECUTABLE "cmake": library "libcmake.so" not found
+
+       If it is genuinely missing:  pkg install cmake
+       If it is installed but broken: pkg reinstall cmake
+```
+
+手工排查：
+
+```bash
+command -v cmake     # 解析到哪——注意 PATH 靠前位置有没有旧副本
+cmake --version      # 这才是 cnoke 真正检查的；非 0 就是不可用
+pkg reinstall cmake  # 通常能修好「装了但坏了」的 cmake
+```
+
+`--check` 会区分这两种状态：
+
+```
+0 toolchain                        complete
+0 toolchain                        MISSING: cmake
+0 toolchain                        BROKEN: cmake (installed, will not run)
+```
 
 **`upstream layout changed`** —— 某一步的锚点出现的次数不是恰好 1 次，说明上游挪了代码。
 不要强行绕过；带上 dsh 版本提 issue。

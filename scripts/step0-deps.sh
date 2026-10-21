@@ -26,6 +26,30 @@ tar:unpacking release archives (steps 2, 6)
 curl:downloading sources and releases (steps 2, 6)
 "
 
+# dpkg only proves the files landed. cmake in particular can be "installed" yet
+# fail to execute (ABI mismatch, interrupted upgrade, missing shared library),
+# and later steps would then fail with cnoke's "CMake does not seem to be
+# available" — which sounds like a missing package. Verify the tools we can
+# actually run, so the failure is caught here where the fix is obvious.
+verify_runnable() {
+    local broken=() tool
+    for tool in cmake clang git; do
+        command -v "$tool" >/dev/null 2>&1 || continue
+        if ! "$tool" --version >/dev/null 2>&1; then
+            broken+=("$tool")
+            dim "  $tool is installed but '$tool --version' failed"
+        fi
+    done
+
+    if [ ${#broken[@]} -gt 0 ]; then
+        warn "${broken[*]} installed but not runnable"
+        dim "  try: pkg reinstall ${broken[*]}" >&2
+        exit 1
+    fi
+
+    ok "installed tools are runnable"
+}
+
 info "toolchain"
 
 MISSING=()
@@ -43,6 +67,10 @@ done <<< "$DEPS"
 
 if [ ${#MISSING[@]} -eq 0 ]; then
     ok "all $PRESENT packages present"
+    # Presence is not the same as working. A package can be installed yet fail
+    # to execute, and the later steps then blame the wrong thing (see the
+    # cmake/checkCMake note below). The check runs on this path too.
+    verify_runnable
     exit 0
 fi
 
@@ -74,3 +102,4 @@ if [ ${#STILL[@]} -gt 0 ]; then
 fi
 
 ok "installed ${MISSING[*]}"
+verify_runnable

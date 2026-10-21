@@ -3,6 +3,25 @@
 All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.4.0] — 2026-10-21
+
+### Fixed
+
+- **`CMake does not seem to be available` also fires when cmake is installed
+  but unrunnable.** cnoke's `checkCMake()` judges cmake solely by the exit
+  status of `cmake --version`. A broken install — interrupted upgrade, missing
+  shared library, or a stale `$PREFIX/bin/cmake` shadowing a working one —
+  produces the identical message, which reads as "not installed". Step 1
+  previously guarded with `command -v cmake`, which passes in exactly that
+  case, so the build failed with the same misleading text.
+- Step 1 now probes with `cmake --version` — the same test cnoke uses — and
+  reports cmake's own stderr, distinguishing "missing" from "broken".
+- Step 0 verifies `cmake`, `clang` and `git` actually execute after installing,
+  including on the all-present fast path, and fails with `pkg reinstall ...`
+  rather than leaving it for a later step.
+- `--check` gained a `BROKEN:` state alongside `MISSING:`, so an installed but
+  unrunnable tool is visible before any build starts.
+
 ## [1.3.0] — 2026-10-21
 
 ### Added
