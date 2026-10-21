@@ -26,7 +26,7 @@ Android 与 Linux 足够相似，能骗过所有表面检查；又足够不同�
 
 | # | 组件 | 失效的假设 | 修法 |
 |---|---|---|---|
-| 1 | `koffi` | `<sys/stat.h>` 声明了 `statx()` | 把 Android 排除出 `statx` 分支，走自带的 `fstatat` 回退 |
+| 1 | `koffi` | `<sys/stat.h>` 声明了 `statx()` | 提供已排除 `statx` 的预编译绑定；对不上才编译 |
 | 2 | `node-addon-require-builtin` | 存在 `android-arm64` 预编译产物 | 从上游源码编译 |
 | 3 | `node-addon-system` | 存在 `android-arm64` 预编译产物 | 用自写的最小 N-API 绑定顶替 |
 | 4 | 会话持久化、附件 | `link(2)` 可用 | 全部改成 `renameat2` / `copyFile` |
@@ -63,6 +63,21 @@ Error: Local speech is unavailable for android-arm64
 rpath 让 addon 找到同目录的 `.so`，dsh 进程里也没有 `LD_LIBRARY_PATH`。补丁因此
 在 require addon 之前用 `process.dlopen` 预加载那两个共享库，把它们放进全局符号表，
 `OrtGetApiBase` 才解析得到。
+
+### koffi 走预编译绑定
+
+`src/koffi/koffi.node` 是用打过补丁的源码编好的一份 aarch64 绑定。第 1 步直接
+安装它，并验证它真能加载——用的是和 cnoke 一样的检查（`node -e "require('koffi')"`）。
+
+这么做不是为了快。**有一份能用的绑定，就意味着 cmake 根本不会被调用**，而 cmake
+恰恰是整套东西在 Termux 上最不可靠的一环：issue #1 和 #2 都是 cmake 出问题
+（先是没装，后来是它对着更新的 libc++ 编译、装着的 libc++ 却偏旧），两次都和 koffi
+本身无关。cnoke 在 `checkPrebuild()` 里遇到有效预编译产物会直接返回，所以只要它在，
+编译器和 cmake 都不会启动。
+
+这份绑定是 N-API 的，因此不受 Node 大版本影响；但它绑定 koffi 的版本。
+`koffi.json` 记着版本、架构和校验和，任何一项对不上，第 1 步就回退到从源码编译——
+换个 koffi 版本依然能用，只是那时才需要工具链。
 
 ### 最麻烦的一个：SELinux 禁止 `link()`
 
@@ -115,7 +130,7 @@ dsh-termux-fix — status
   node          v26.4.0
   platform      Linux aarch64
 
-  1 koffi source                     patched
+  1 koffi binding                    loads (koffi 3.1.1)
   2 require-builtin binding          present (245424 bytes)
   3 system binding                   present (8216 bytes)
   3 flock.js guard                   allows android
@@ -164,6 +179,7 @@ dsh-termux-fix — status
 - `clang`、`cmake`、`make`、`git`、`tar`、`curl`。
   **第 0 步会用 `pkg` 装好这些**，已装时自动跳过，所以一般不用手动装。
   之所以还列在这里，是因为如果你跳过第 0 步，第 1 步及之后会假定它们存在。
+  其中 `cmake` 只在预编译的 koffi 绑不能用时才需要——见下。
 - 第 2、6 步需要网络（克隆源码、下载 sherpa 发布包）；产物已存在时跳过。
 - 语音功能需要在 dsh profile 里启用 voice-input bundle。
   没启用时 `--check` 会显示 `6 speech package  not installed`。
@@ -274,7 +290,7 @@ install.sh                  入口：--check / --step / --list / --help
 scripts/
   lib.sh                    共享函数、模块定位
   step0-deps.sh             用 pkg 安装工具链
-  step1-koffi.sh            statx -> fstatat
+  step1-koffi.sh            安装预编译绑定，不匹配才 statx -> fstatat 编译
   step2-require-builtin.sh  克隆源码，编译缺失的绑定
   step3-system.sh           构建/安装 flock + renameNoReplace，修平台守卫
   step4-selinux.sh          link() 回退
@@ -285,6 +301,9 @@ scripts/
 src/node-addon-system/
   system.cc                 N-API 绑定：tryLock、renameNoReplace
   system.node               预编译 aarch64 绑定（回退用）
+src/koffi/
+  koffi.node                预编译 aarch64 koffi 绑定，已排除 statx
+  koffi.json                上者的版本、架构与校验和
 patch/
   patch-session-persistence.mjs   针对两个 JS 包的锚点补丁器
   patch-sherpa-addon.mjs          库预加载 + sensevoice 平台白名单

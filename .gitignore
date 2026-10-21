@@ -1,6 +1,7 @@
 # Build artefacts and scratch dirs
 *.node
 !src/node-addon-system/system.node
+!src/koffi/koffi.node
 node_modules/
 build/
 *.tgz

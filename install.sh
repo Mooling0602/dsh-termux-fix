@@ -52,7 +52,7 @@ TXT
 list_steps() {
     cat <<'TXT'
 0  deps                       install the toolchain (clang, cmake, git, ...)
-1  koffi                      statx() unavailable in Android NDK headers
+1  koffi                      statx() unavailable; prebuilt binding, compile as fallback
 2  node-addon-require-builtin no android prebuilt; compiled from upstream source
 3  node-addon-system          no android prebuilt (source private); substitute binding
 4  session-persistence        SELinux denies link(); renameat2 / copyFile fallbacks
@@ -103,18 +103,24 @@ check_status() {
         status "0 toolchain" "MISSING:$missing"
     fi
 
-    # 1 koffi
-    local kbase=$dmod/koffi/lib/native/base/base.cc
-    if [ -f "$kbase" ]; then
-        local first
-        first=$(awk '/^static StatResult[[:space:]]+StatAt\(/ { infn = 1; next }
-                     infn && /^#if defined/ { print; exit }' "$kbase")
-        case "$first" in
-            *__ANDROID__*) status "1 koffi source" "patched" ;;
-            *)             status "1 koffi source" "NOT patched" ;;
-        esac
+    # 1 koffi — what matters is whether the binding loads, not how it got
+    # there. A prebuilt avoids needing cmake at all; a source build proves the
+    # statx patch was applied, but both produce an equivalent binding.
+    local kbase=$dmod/koffi
+    local kbind
+    kbind=$(ls "$kbase"/build/koffi/android_*/koffi.node 2>/dev/null | head -1)
+    if [ -f "$kbase/lib/native/base/base.cc" ]; then
+        if [ -n "$kbind" ] && ( cd "$kbase" && node -e 'require(process.argv[1])' "$kbase" >/dev/null 2>&1 ); then
+            local kver
+            kver=$(node -e 'console.log(require(process.argv[1]).version)' "$kbase/package.json" 2>/dev/null || echo '?')
+            status "1 koffi binding" "loads (koffi $kver)"
+        elif [ -n "$kbind" ]; then
+            status "1 koffi binding" "present but will not load"
+        else
+            status "1 koffi binding" "MISSING"
+        fi
     else
-        status "1 koffi source" "missing"
+        status "1 koffi binding" "package missing"
     fi
 
     # 2 require-builtin

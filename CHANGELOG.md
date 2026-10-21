@@ -3,6 +3,32 @@
 All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.6.0] — 2026-10-21
+
+### Added
+
+- **Prebuilt koffi binding** (`src/koffi/koffi.node`, 1.1 MB) compiled once from
+  the patched source, with `koffi.json` recording version, architecture and
+  checksum. Step 1 installs it and verifies that it loads — the same test
+  cnoke's `checkPrebuild()` performs — and only compiles from source when the
+  version, architecture or checksum does not match.
+
+### Changed
+
+- **cmake is no longer required for step 1.** cnoke short-circuits on a valid
+  prebuilt, so neither the compiler nor cmake is invoked when the binding fits.
+  This removes the single least reliable dependency on Termux: issues #1 and #2
+  were both cmake failures (absent, then built against a newer libc++ than
+  installed) and neither concerned koffi's behaviour.
+- `--check` reports `1 koffi binding  loads (koffi <version>)` instead of
+  inspecting whether the source carries the patch. How the binding was obtained
+  is no longer the interesting question — whether it loads is.
+
+### Fixed
+
+- Step 1 verifies the binding after a source build too, so a build that
+  succeeds but produces an unloadable binary no longer reports `ok compiled`.
+
 ## [1.5.0] — 2026-10-21
 
 ### Fixed

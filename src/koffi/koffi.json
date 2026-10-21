@@ -1,0 +1,7 @@
+{
+  "koffiVersion": "3.1.1",
+  "arch": "aarch64",
+  "abi": "napi",
+  "note": "Built from patched source: StatAt() excludes Android from the statx() branch. N-API, so it survives Node major upgrades.",
+  "sha256": "5809125714d912716becef177ab5b8e95d9f6169602ab9879aa0afa0e8e4dbab"
+}

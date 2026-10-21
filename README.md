@@ -29,7 +29,7 @@ each is a mismatch between what dsh assumes and what Android provides.
 
 | # | Component | Assumption that breaks | Fix |
 |---|---|---|---|
-| 1 | `koffi` | `statx()` is declared in `<sys/stat.h>` | Exclude Android from the `statx` branch; use the existing `fstatat` fallback |
+| 1 | `koffi` | `statx()` is declared in `<sys/stat.h>` | Exclude Android from the `statx` branch in a prebuilt binding; compile only if it does not fit |
 | 2 | `node-addon-require-builtin` | A prebuilt `android-arm64` binary exists | Compile it from upstream source |
 | 3 | `node-addon-system` | A prebuilt `android-arm64` binary exists | Substitute our own minimal N-API binding |
 | 4 | session persistence, attachments | `link(2)` works | Replace every `link()` publish with `renameat2` / `copyFile` |
@@ -69,6 +69,24 @@ carries on. So the addon cannot find its sibling `.so` files by rpath, and the
 dsh process does not export `LD_LIBRARY_PATH`. The patch therefore preloads the
 two shared libraries with `process.dlopen` before requiring the addon, which
 puts them in the global symbol scope where `OrtGetApiBase` can be resolved.
+
+### koffi ships a prebuilt binding
+
+`src/koffi/koffi.node` is a compiled aarch64 binding, built once from the
+patched source. Step 1 installs it and checks that it actually loads — the same
+test cnoke uses (`node -e "require('koffi')"`).
+
+The reason is not speed. **Having a working binding means cmake is never
+invoked**, and cmake is the least reliable part of this whole setup on Termux:
+issues #1 and #2 were both cmake failures (absent, then built against a newer
+libc++ than the one installed), and neither had anything to do with koffi.
+cnoke short-circuits on a valid prebuilt through `checkPrebuild()`, so with one
+in place neither the compiler nor cmake runs at all.
+
+The binding is N-API and therefore not tied to a Node major version, but it *is*
+tied to the koffi release: `koffi.json` records the version, architecture and
+checksum. Step 1 falls back to compiling from source when any of them does not
+match, so a different koffi still works — it just needs the toolchain.
 
 ### The interesting one: SELinux blocks `link()`
 
@@ -126,7 +144,7 @@ dsh-termux-fix — status
   node          v26.4.0
   platform      Linux aarch64
 
-  1 koffi source                     patched
+  1 koffi binding                    loads (koffi 3.1.1)
   2 require-builtin binding          present (245424 bytes)
   3 system binding                   present (8216 bytes)
   3 flock.js guard                   allows android
@@ -182,6 +200,8 @@ unless you cleared that directory.
   **Step 0 installs these via `pkg`** and is a no-op when they are present, so
   you do not normally need to install them by hand. They are still listed here
   because `--step 1` and later assume them if you skip step 0.
+  `cmake` is only needed if the prebuilt koffi binding cannot be used — see
+  below.
 - Network access for steps 2 and 6 (clone/compile sources, fetch the sherpa
   release). Both are skipped when their output is already present.
 - For speech, the voice-input bundle enabled in your dsh profile.
@@ -315,6 +335,9 @@ scripts/
 src/node-addon-system/
   system.cc                 N-API binding: tryLock, renameNoReplace
   system.node               Prebuilt aarch64 binding (fallback)
+src/koffi/
+  koffi.node                Prebuilt aarch64 koffi binding, statx excluded
+  koffi.json                Version, arch and checksum for the above
 patch/
   patch-session-persistence.mjs   Anchored patcher for the two JS packages
   patch-sherpa-addon.mjs          Library preload + sensevoice platform gate
