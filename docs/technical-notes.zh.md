@@ -156,6 +156,68 @@ awk '/^static StatResult[[:space:]]+StatAt\(/ { infn = 1; next }
 双向验证过：把文件还原成未打补丁状态再跑一遍，得到与补丁态**逐字节一致**的结果；
 对已打补丁的文件重跑，md5 不变。
 
+## 语音：为什么 rpath 在 Android 上不管用
+
+这条值得记下来，因为这个失败看起来像"缺库"，会让人一路去查路径。
+
+编译出的 addon 需要 `libsherpa-onnx-c-api.so` 和 `libonnxruntime.so`。
+常规做法是写个 rpath 让 loader 找到同目录的兄弟文件：
+
+```bash
+c++ ... -Wl,-rpath,'$ORIGIN' -o sherpa-onnx.node
+```
+
+在 glibc 上这样就行。在 Android 上不行，而且 linker 会明说：
+
+```
+WARNING: linker: Warning: "...sherpa-onnx.node" unused DT entry: DT_RPATH
+  (type 0xf arg 0x241c) (ignoring)
+```
+
+bionic 的 loader **同时忽略 `DT_RPATH` 和 `DT_RUNPATH`**。参与的只有
+`LD_LIBRARY_PATH`、按默认路径解析的 `DT_NEEDED`，以及已经加载过的库。
+dsh 不导出 `LD_LIBRARY_PATH`，而在进程内部再设也太晚了，所以实际可选的方案是：
+
+1. 改 `addon.js`，在 require addon 之前用 `process.dlopen` 逐个加载依赖 ——
+   本仓库的做法；
+2. 把 `.so` 装进默认搜索路径（`$PREFIX/lib`）—— 能用，但污染共享目录，
+   而且多版本会撞车；
+3. 用 shell 包装 dsh 启动并导出 `LD_LIBRARY_PATH` —— 能用，但 dsh 被别的
+   方式拉起时（服务、快捷方式）就失效了。
+
+方案 1 侵入性最小。注意对普通共享库调 `process.dlopen` 会抛
+`Module did not self-register`。这个错误是**预期且无害的**：那时库已经映射进进程了，
+而这正是我们要的。补丁是有意吞掉它的。
+
+## 语音：glibc 与 bionic
+
+预编译的 `sherpa-onnx-linux-arm64` 二进制依赖：
+
+```
+NEEDED  libsherpa-onnx-c-api.so
+NEEDED  libonnxruntime.so
+NEEDED  libstdc++.so.6
+NEEDED  libc.so.6
+NEEDED  ld-linux-aarch64.so.1
+```
+
+`libc.so.6` 和 `ld-linux-aarch64.so.1` 是 glibc。Termux 的二进制链的是 bionic
+的 `libc.so` 和 `libdl.so`。两者之间没有兼容层，所以把 linux-arm64 那份拷到
+Android 上不可能跑起来——rpath、`LD_LIBRARY_PATH`、`patchelf` 都救不了。
+
+作为对照，上游的 `android-aarch64-termux-shared` 发布包依赖的是：
+
+```
+NEEDED  libandroid.so
+NEEDED  liblog.so
+NEEDED  libc.so
+NEEDED  libc++_shared.so
+```
+
+这是 bionic 构建，能加载。它唯一缺的就是那层 N-API 封装，所以第 6 步编译
+约 18 个 `.cc` 文件并链接到这个发布包，而不是从源码重编 sherpa-onnx 和
+onnxruntime（那需要 CMake、protobuf，构建时间非常长）。
+
 ## 移植到其他架构
 
 有三处假设 aarch64：

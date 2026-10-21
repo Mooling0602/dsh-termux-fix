@@ -177,6 +177,74 @@ Verified both ways: restoring the file to its unpatched state and running the
 patch reproduces the patched file byte-for-byte, and re-running on an already
 patched file leaves the md5 unchanged.
 
+## Speech: why rpath does not work on Android
+
+Worth writing down, because the failure looks like a missing library and sends
+you chasing paths.
+
+The compiled addon needs `libsherpa-onnx-c-api.so` and `libonnxruntime.so`.
+Standard practice is to emit an rpath so the loader finds siblings:
+
+```bash
+c++ ... -Wl,-rpath,'$ORIGIN' -o sherpa-onnx.node
+```
+
+On glibc that works. On Android it does not, and the linker says so out loud:
+
+```
+WARNING: linker: Warning: "...sherpa-onnx.node" unused DT entry: DT_RPATH
+  (type 0xf arg 0x241c) (ignoring)
+```
+
+Both `DT_RPATH` and `DT_RUNPATH` are ignored by bionic's loader. Only
+`LD_LIBRARY_PATH`, `DT_NEEDED` resolution against the default paths, and
+already-loaded libraries participate. Since dsh does not export
+`LD_LIBRARY_PATH`, and setting it from inside the process is too late, the
+practical options are:
+
+1. patch `addon.js` to `process.dlopen` each dependency before requiring the
+   addon — what this repo does;
+2. install the `.so` files into a default search path (`$PREFIX/lib`) — works,
+   but pollutes a shared directory and collides across versions;
+3. wrap the dsh launch in a shell script that exports `LD_LIBRARY_PATH` —
+   works, but breaks when dsh is started by other means (service, shortcut).
+
+Option 1 is the least invasive. Note that `process.dlopen` on a plain shared
+library throws `Module did not self-register`. That error is **expected and
+harmless**: the library has already been mapped into the process by then, which
+is the entire point. The patch swallows it deliberately.
+
+## Speech: glibc vs bionic
+
+The prebuilt `sherpa-onnx-linux-arm64` binary has:
+
+```
+NEEDED  libsherpa-onnx-c-api.so
+NEEDED  libonnxruntime.so
+NEEDED  libstdc++.so.6
+NEEDED  libc.so.6
+NEEDED  ld-linux-aarch64.so.1
+```
+
+`libc.so.6` and `ld-linux-aarch64.so.1` are glibc. Termux binaries link
+`libc.so` and `libdl.so` from bionic. There is no compatibility layer, so
+copying the linux-arm64 build onto Android cannot work — no amount of rpath,
+`LD_LIBRARY_PATH`, or `patchelf` fixes it.
+
+Upstream's `android-aarch64-termux-shared` release, by contrast, has:
+
+```
+NEEDED  libandroid.so
+NEEDED  liblog.so
+NEEDED  libc.so
+NEEDED  libc++_shared.so
+```
+
+That is a bionic build, and it loads. The only thing missing from it is the
+N-API wrapper, which is why step 6 compiles ~18 `.cc` files and links against
+that release instead of rebuilding sherpa-onnx and onnxruntime from source
+(which would need CMake, protobuf, and a very long build).
+
 ## Porting to another architecture
 
 Three places assume aarch64:

@@ -24,7 +24,7 @@ USAGE
 
 OPTIONS
   --check          Report the status of every patch without changing anything.
-  --step N         Run only step N (1-5).
+  --step N         Run only step N (1-6).
   --list           List the steps.
   -h, --help       Show this help.
 
@@ -40,6 +40,7 @@ STEPS
   3  node-addon-system          no android prebuilt; substitute our binding
   4  session-persistence        SELinux blocks link(); renameat2 / copyFile
   5  verify                     load every binding and exercise it
+  6  speech                     local SenseVoice; no android prebuilt
 
 NOTE
   These patches change files inside the installed dsh package. Every upgrade
@@ -54,6 +55,7 @@ list_steps() {
 3  node-addon-system          no android prebuilt (source private); substitute binding
 4  session-persistence        SELinux denies link(); renameat2 / copyFile fallbacks
 5  verify                     load all bindings, check the EEXIST contract
+6  speech                     local speech-to-text via sherpa-onnx
 TXT
 }
 
@@ -127,6 +129,38 @@ check_status() {
         status "4 attachment-local" "missing"
     fi
 
+    # 6 speech
+    local sv=$dmod/@deepseek-ai/dsh-experimental-speech-to-text-sensevoice
+    if [ -d "$sv" ]; then
+        local sn=
+        for c in "$sv/node_modules/sherpa-onnx-node" "$dmod/sherpa-onnx-node"; do
+            [ -d "$c" ] && { sn=$c; break; }
+        done
+        if [ -n "$sn" ] && [ -f "$sn/sherpa-onnx.node" ]; then
+            status "6 sherpa addon" "present ($(wc -c < "$sn/sherpa-onnx.node") bytes)"
+        else
+            status "6 sherpa addon" "MISSING"
+        fi
+        if grep -qF '"android-arm64"' "$sv/lib/index.js" 2>/dev/null; then
+            status "6 sensevoice platform gate" "allows android"
+        else
+            status "6 sensevoice platform gate" "NOT patched"
+        fi
+        if [ -n "$sn" ] && grep -qF 'dsh-termux-fix: preload sherpa' "$sn/addon.js" 2>/dev/null; then
+            status "6 addon library preload" "patched"
+        else
+            status "6 addon library preload" "NOT patched"
+        fi
+        local models=$HOME/.dsh/speech-to-text/sensevoice/models
+        if [ -f "$models/silero/silero_vad.onnx" ] && [ -f "$models/sensevoice-onnx/model.int8.onnx" ]; then
+            status "6 model files" "downloaded"
+        else
+            status "6 model files" "not downloaded (settings page)"
+        fi
+    else
+        status "6 speech package" "not installed (enable voice-input bundle)"
+    fi
+
     printf '\n'
     info "run ./install.sh to apply, or ./install.sh --step N for one step"
 }
@@ -139,7 +173,8 @@ run_step() {
         3) bash "$HERE/scripts/step3-system.sh" ;;
         4) bash "$HERE/scripts/step4-selinux.sh" ;;
         5) bash "$HERE/scripts/step5-verify.sh" ;;
-        *) die "no such step: $n (valid: 1-5)" ;;
+        6) bash "$HERE/scripts/step6-speech.sh" ;;
+        *) die "no such step: $n (valid: 1-6)" ;;
     esac
 }
 
@@ -180,7 +215,8 @@ main() {
     run_step 2; printf '\n'
     run_step 3; printf '\n'
     run_step 4; printf '\n'
-    run_step 5
+    run_step 5; printf '\n'
+    run_step 6
 
     printf '\n'
     ok "done — restart dsh"

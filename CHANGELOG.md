@@ -3,6 +3,40 @@
 All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.1.0] — 2026-10-21
+
+### Added
+
+- **Step 6: local speech-to-text.** Voice input previously failed with
+  `Local speech is unavailable for android-arm64`. Two independent causes:
+  the sensevoice package allowlists only darwin/linux/win32, and
+  `sherpa-onnx-node` has no android build at all — its `linux-arm64` binary is
+  linked against glibc (`libc.so.6`, `ld-linux-aarch64.so.1`) and cannot load
+  on Android's bionic libc.
+- `scripts/step6-speech.sh` downloads upstream's
+  `android-aarch64-termux-shared` release (a bionic build, published on GitHub
+  but not through npm), compiles only the N-API wrapper, and installs both.
+- `scripts/build-sherpa-addon.sh` — the clang command line for that wrapper.
+- `patch/patch-sherpa-addon.mjs` — two anchored rewrites: the sensevoice
+  platform allowlist, and a `process.dlopen` preload in `addon.js`.
+
+### Fixed
+
+- **Android's linker ignores `DT_RPATH`/`DT_RUNPATH`.** Emitting an rpath on a
+  native addon does nothing on Android — the loader prints
+  `unused DT entry: DT_RPATH ... (ignoring)`. The addon therefore cannot find
+  its sibling `.so` files, and dsh does not export `LD_LIBRARY_PATH`. The
+  preload in `addon.js` is the fix. Note that `process.dlopen` on a plain
+  shared library throws `Module did not self-register` — expected, harmless,
+  and swallowed on purpose.
+
+### Changed
+
+- Duplicate retry logic for slow networks replaced with mirror fallbacks
+  (`gh-proxy.com`, `ghproxy.net`) in step 6.
+- Documented that `npm install -g @deepseek-ai/dsh` is a **prerequisite**, not
+  something the installer does.
+
 ## [1.0.0] — 2026-10-21
 
 Initial release. Collected, verified and packaged the set of patches needed to

@@ -10,14 +10,18 @@
 不同的层各摔一跤。这个仓库把它们收集成一个可重复运行、幂等的安装脚本。
 
 ```
-$ npm install -g @deepseek-ai/dsh
-$ ./install.sh
-$ dsh web                     # 现在能起来了
+$ npm install -g @deepseek-ai/dsh     # 1. 先装 dsh
+$ cd dsh-termux-fix && ./install.sh   # 2. 再打补丁
+$ dsh web                             # 3. 现在能起来了
 ```
+
+> **顺序不能反。** 这些补丁改的是**已安装包内部**的文件，所以必须先装好
+> `@deepseek-ai/dsh` 再跑 `install.sh`。没装的话脚本会停下来提示你装。
+> 每次 `npm install -g @deepseek-ai/dsh` 之后都要重跑 `./install.sh`。
 
 ## 为什么跑不起来
 
-Android 与 Linux 足够相似，能骗过所有表面检查；又足够不同，在五个独立的地方失败。
+Android 与 Linux 足够相似，能骗过所有表面检查；又足够不同，在六个独立的地方失败。
 这些都不是配置问题，而是 dsh 的假设与 Android 的实际能力对不上。
 
 | # | 组件 | 失效的假设 | 修法 |
@@ -27,6 +31,34 @@ Android 与 Linux 足够相似，能骗过所有表面检查；又足够不同�
 | 3 | `node-addon-system` | 存在 `android-arm64` 预编译产物 | 用自写的最小 N-API 绑定顶替 |
 | 4 | 会话持久化、附件 | `link(2)` 可用 | 全部改成 `renameat2` / `copyFile` |
 | 5 | 验证 | — | 加载每个绑定并实跑 |
+| 6 | 本地语音输入 | 存在 `android-arm64` 的 sherpa-onnx | 用上游官方 Termux 版编译 N-API 封装 |
+
+### 语音：一行报错，两个毛病
+
+语音输入失败时只给一句没什么信息量的话：
+
+```
+Error: Local speech is unavailable for android-arm64
+```
+
+它来自 `dsh-experimental-speech-to-text-sensevoice` 里写死的平台白名单，
+只列了 darwin/linux/win32。把 `android-arm64` 加进去是**必要但不充分**的——
+下一个失败点是原生依赖：
+
+`sherpa-onnx-node` 只发 linux、darwin、win32 的预编译产物。其中 `linux-arm64`
+那份动态链接的是 **glibc**（`libc.so.6`、`ld-linux-aarch64.so.1`、
+`libstdc++.so.6`）。Android 用的是 **bionic**，所以那个二进制根本加载不了——
+这不是路径问题，是 libc 就不一样。
+
+出路在于：上游其实发布了 `android-aarch64-termux-shared` 版本，是针对 bionic
+编译的，只是没走 npm 分发。第 6 步下载那个发布包，只编译上面那层薄薄的 N-API
+封装，然后和 JS 包放在一起。
+
+有个坑值得单独说：**Android 的 linker 完全不处理 `DT_RPATH` 和 `DT_RUNPATH`**——
+它会打印 `unused DT entry: DT_RPATH ... (ignoring)` 然后照常往下走。所以既不能靠
+rpath 让 addon 找到同目录的 `.so`，dsh 进程里也没有 `LD_LIBRARY_PATH`。补丁因此
+在 require addon 之前用 `process.dlopen` 预加载那两个共享库，把它们放进全局符号表，
+`OrtGetApiBase` 才解析得到。
 
 ### 最麻烦的一个：SELinux 禁止 `link()`
 
@@ -85,6 +117,10 @@ dsh-termux-fix — status
   3 flock.js guard                   allows android
   4 session-persistence              patched (3 refs)
   4 attachment-local                 patched (2 refs)
+  6 sherpa addon                     present (616216 bytes)
+  6 sensevoice platform gate         allows android
+  6 addon library preload            patched
+  6 model files                      downloaded
 ```
 
 ### 环境变量
@@ -104,13 +140,26 @@ dsh-termux-fix — status
 只有 `koffi` 需要真正重新编译；另外两个走 N-API v9，能跨 Node 版本存活。
 第 2 步在绑定已存在时会直接跳过，所以重跑成本很低。
 
+**第 6 步是最脆的一个。** 它往 `sherpa-onnx-node` 里写文件，而这个包是 npm
+作为 voice-input bundle 的传递依赖装进来的。重装会抹掉编译好的 `.node` 和那几个
+`.so`。更麻烦的是 dsh profile 用的是 pnpm，`pnpm install` 会重建整个 store，直接把你
+送回 `Local speech is unavailable for android-arm64`。任何依赖变动之后都重跑
+`./install.sh --step 6`。构建产物留在 `$DSH_FIX_WORKDIR/sherpa-onnx/`，
+所以重建只是链接一步，不用重新下载——除非你把那个目录清了。
+
 ## 要求
 
 - Android 上的 Termux，**aarch64**（arm64）。预编译的 `system.node` 仅支持
-  aarch64；其他架构需从 `system.cc` 重新编译。
+  aarch64；其他架构需从 `system.cc` 重新编译。第 6 步同样依赖上游的
+  `android-aarch64` 发布包。
+- **先装好 `@deepseek-ai/dsh`。** 跑 `./install.sh` 之前先
+  `npm install -g @deepseek-ai/dsh`；这些补丁改的是已安装包，没装就无处可改。
+  用 `npm root -g` 确认位置。
 - Node.js ≥ 20，且头文件位于 `$PREFIX/include/node`（`pkg install nodejs` 已包含）。
 - `clang`（`pkg install clang`）。
-- 第 2 步需要网络（克隆上游源码）；绑定已存在时跳过。
+- 第 2、6 步需要网络（克隆源码、下载 sherpa 发布包）；产物已存在时跳过。
+- 语音功能需要在 dsh profile 里启用 voice-input bundle。
+  没启用时 `--check` 会显示 `6 speech package  not installed`。
 
 ## 排错
 
@@ -124,6 +173,18 @@ dsh-termux-fix — status
 **dsh 自己的文件工具报 `EACCES ... cannot write <file>`** —— 与第 4 步同根因：
 dsh 的原子写入用了 `link()`。改用 `bash` 重定向写文件即可。第 4 步修的是会话与
 附件路径；通用的文件工具路径属于上游，此处未打补丁。
+
+**语音仍然报 `Local speech is unavailable for android-arm64`** —— 第 6 步没跑，
+或者被重装抹掉了。`./install.sh --check` 会给第 6 步列三行状态，任何一行是
+`MISSING`/`NOT patched` 就重跑 `--step 6`。
+
+**`dlopen failed: cannot locate symbol "OrtGetApiBase"`** —— addon 比它的依赖先加载了，
+说明 `addon.js` 的预加载补丁没打上，重跑 `--step 6`。
+
+**模型下载卡住或失败** —— 插件会先试 `huggingface.co`，再试 `hf-mirror.com`，
+3 秒内谁先响应就用谁。国内通常第一个连不上。想强制指定，就在插件配置里设
+`modelOrigin: https://hf-mirror.com`。模型是在 dsh 设置页首次使用时下载的，
+不由本脚本负责。
 
 **`upstream layout changed`** —— 某一步的锚点出现的次数不是恰好 1 次，说明上游挪了代码。
 不要强行绕过；带上 dsh 版本提 issue。
@@ -147,12 +208,15 @@ scripts/
   step3-system.sh           构建/安装 flock + renameNoReplace，修平台守卫
   step4-selinux.sh          link() 回退
   step5-verify.sh           加载并实跑每个绑定
+  step6-speech.sh           下载上游 Termux 发布包，编译语音 addon
   build-require-builtin.sh  复刻上游 build.ts 的 clang 命令行
+  build-sherpa-addon.sh     sherpa N-API 封装的 clang 命令行
 src/node-addon-system/
   system.cc                 N-API 绑定：tryLock、renameNoReplace
   system.node               预编译 aarch64 绑定（回退用）
 patch/
   patch-session-persistence.mjs   针对两个 JS 包的锚点补丁器
+  patch-sherpa-addon.mjs          库预加载 + sensevoice 平台白名单
 docs/
   technical-notes.md        N-API 接口契约的深入说明
 ```
@@ -160,7 +224,7 @@ docs/
 ## 状态
 
 已在 Termux / aarch64 / Node v26.4.0 / clang 21.1.8，dsh 0.2.1-rc.2、
-koffi 3.1.1 上验证。
+koffi 3.1.1、sherpa-onnx 1.13.8 上验证。
 
 **这不是官方支持路径。** 这里的一切都在修改已安装 npm 包内部的文件。
 升级即失效，上游测试不覆盖，dsh 内部实现也可能随时改变。
