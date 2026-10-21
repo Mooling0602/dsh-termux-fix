@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+# dsh-termux-fix — run @deepseek-ai/dsh on Termux/Android.
+#
+# Usage:
+#   ./install.sh              apply every step (idempotent)
+#   ./install.sh --check      report status only, change nothing
+#   ./install.sh --step 3     run a single step
+#   ./install.sh --help
+#
+# Re-run after every `npm install -g @deepseek-ai/dsh` upgrade: these patches
+# modify the installed package contents and are wiped by a reinstall.
+set -euo pipefail
+
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=scripts/lib.sh
+source "$HERE/scripts/lib.sh"
+
+usage() {
+    cat <<'TXT'
+dsh-termux-fix — make @deepseek-ai/dsh work under Termux/Android
+
+USAGE
+  ./install.sh [options]
+
+OPTIONS
+  --check          Report the status of every patch without changing anything.
+  --step N         Run only step N (1-5).
+  --list           List the steps.
+  -h, --help       Show this help.
+
+ENVIRONMENT
+  DSH_MODULES      Path to @deepseek-ai/dsh/node_modules. Default: npm root -g
+  DSH_FIX_WORKDIR  Scratch dir for cloned/built sources. Default: ~/src
+  NODE_INC         Directory holding node_api.h. Default: $PREFIX/include/node
+  NO_COLOR         Disable coloured output.
+
+STEPS
+  1  koffi                      statx() is unavailable in the Android NDK
+  2  node-addon-require-builtin no android prebuilt; compile from source
+  3  node-addon-system          no android prebuilt; substitute our binding
+  4  session-persistence        SELinux blocks link(); renameat2 / copyFile
+  5  verify                     load every binding and exercise it
+
+NOTE
+  These patches change files inside the installed dsh package. Every upgrade
+  or reinstall wipes them — re-run this script afterwards.
+TXT
+}
+
+list_steps() {
+    cat <<'TXT'
+1  koffi                      statx() unavailable in Android NDK headers
+2  node-addon-require-builtin no android prebuilt; compiled from upstream source
+3  node-addon-system          no android prebuilt (source private); substitute binding
+4  session-persistence        SELinux denies link(); renameat2 / copyFile fallbacks
+5  verify                     load all bindings, check the EEXIST contract
+TXT
+}
+
+check_status() {
+    local dmod ver
+    dmod=$(resolve_dsh_modules)
+    ver=$(dsh_version "$dmod")
+
+    printf '%sdsh-termux-fix — status%s\n\n' "$C_BOLD" "$C_RESET"
+    printf '  dsh version   %s\n' "$ver"
+    printf '  modules       %s\n' "$dmod"
+    printf '  node          %s\n' "$(node -v)"
+    printf '  platform      %s %s\n\n' "$(uname -s)" "$(uname -m)"
+
+    status() { printf '  %-34s %s\n' "$1" "$2"; }
+
+    # 1 koffi
+    local kbase=$dmod/koffi/lib/native/base/base.cc
+    if [ -f "$kbase" ]; then
+        local first
+        first=$(awk '/^static StatResult[[:space:]]+StatAt\(/ { infn = 1; next }
+                     infn && /^#if defined/ { print; exit }' "$kbase")
+        case "$first" in
+            *__ANDROID__*) status "1 koffi source" "patched" ;;
+            *)             status "1 koffi source" "NOT patched" ;;
+        esac
+    else
+        status "1 koffi source" "missing"
+    fi
+
+    # 2 require-builtin
+    local rb=$dmod/node-addon-require-builtin/build/napi/napi-v9-android-arm64/require_builtin.node
+    [ -f "$rb" ] && status "2 require-builtin binding" "present ($(wc -c < "$rb") bytes)" \
+                 || status "2 require-builtin binding" "MISSING"
+
+    # 3 system
+    local sys=$dmod/@deepseek-ai/node-addon-system-android-arm64/bin/system.node
+    [ -f "$sys" ] && status "3 system binding" "present ($(wc -c < "$sys") bytes)" \
+                  || status "3 system binding" "MISSING"
+    if [ -f "$dmod/@deepseek-ai/node-addon-system/lib/flock.js" ]; then
+        if grep -qF "platform !== 'android'" "$dmod/@deepseek-ai/node-addon-system/lib/flock.js"; then
+            local dup
+            dup=$(grep -o "platform !== 'android'" "$dmod/@deepseek-ai/node-addon-system/lib/flock.js" | wc -l)
+            if [ "$dup" -gt 1 ]; then
+                status "3 flock.js guard" "allows android (x$dup duplicated)"
+            else
+                status "3 flock.js guard" "allows android"
+            fi
+        else
+            status "3 flock.js guard" "NOT patched"
+        fi
+    fi
+
+    # 4 session persistence
+    local sp=$dmod/@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js
+    if [ -f "$sp" ]; then
+        local n
+        n=$(grep -c "_dshTermuxLoadSystem" "$sp" 2>/dev/null || true)
+        [ "$n" -ge 3 ] && status "4 session-persistence" "patched ($n refs)" \
+                       || status "4 session-persistence" "NOT patched ($n refs)"
+    else
+        status "4 session-persistence" "missing"
+    fi
+    local att=$dmod/@deepseek-ai/dsh-attachment-local/lib/index.js
+    if [ -f "$att" ]; then
+        local n
+        n=$(grep -c "dsh-termux-fix" "$att" 2>/dev/null || true)
+        [ "$n" -ge 2 ] && status "4 attachment-local" "patched ($n refs)" \
+                       || status "4 attachment-local" "NOT patched ($n refs)"
+    else
+        status "4 attachment-local" "missing"
+    fi
+
+    printf '\n'
+    info "run ./install.sh to apply, or ./install.sh --step N for one step"
+}
+
+run_step() {
+    local n=$1
+    case "$n" in
+        1) bash "$HERE/scripts/step1-koffi.sh" ;;
+        2) bash "$HERE/scripts/step2-require-builtin.sh" ;;
+        3) bash "$HERE/scripts/step3-system.sh" ;;
+        4) bash "$HERE/scripts/step4-selinux.sh" ;;
+        5) bash "$HERE/scripts/step5-verify.sh" ;;
+        *) die "no such step: $n (valid: 1-5)" ;;
+    esac
+}
+
+main() {
+    local mode=install step=''
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --check)   mode=check ;;
+            --step)    shift; step=${1:-} ;;
+            --step=*)  step=${1#*=} ;;
+            --list)    list_steps; exit 0 ;;
+            -h|--help) usage; exit 0 ;;
+            *) die "unknown argument: $1 (try --help)" ;;
+        esac
+        shift
+    done
+
+    require_android_or_linux
+    require_arm64_note
+
+    if [ "$mode" = check ]; then
+        check_status
+        exit 0
+    fi
+
+    if [ -n "$step" ]; then
+        run_step "$step"
+        exit 0
+    fi
+
+    local dmod ver
+    dmod=$(resolve_dsh_modules)
+    ver=$(dsh_version "$dmod")
+    info "dsh $ver at $dmod"
+    printf '\n'
+
+    run_step 1; printf '\n'
+    run_step 2; printf '\n'
+    run_step 3; printf '\n'
+    run_step 4; printf '\n'
+    run_step 5
+
+    printf '\n'
+    ok "done — restart dsh"
+}
+
+main "$@"

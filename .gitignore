@@ -1,0 +1,11 @@
+# Build artefacts and scratch dirs
+*.node
+!src/node-addon-system/system.node
+node_modules/
+build/
+*.tgz
+
+# Editor / OS noise
+.DS_Store
+*.swp
+.vscode/
