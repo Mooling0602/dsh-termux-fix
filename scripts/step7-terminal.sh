@@ -36,10 +36,13 @@ PTY_ARCH=$(node -p "process.arch")
 [ -d "$SUBPROCESS" ] || die "missing $SUBPROCESS (is this dsh >= 0.2?)"
 [ -d "$NODE_PTY" ] || die "missing $NODE_PTY"
 
-node "$ROOT/patch/patch-terminal-android.mjs" "$SUBPROCESS" "$NODE_PTY" \
+node "$ROOT/patch/patch-terminal-android.mjs" "$SUBPROCESS" \
     || die "patching failed"
 
-# node-pty resolves its binding from prebuilds/<platform>-<arch>/pty.node.
+# node-pty resolves its binding from prebuilds/<platform>-<arch>/pty.node, so on
+# Termux that is prebuilds/android-arm64/pty.node — a directory upstream simply
+# does not publish. The stock loader already scans this path, so placing the
+# binary is the whole fix; no loader patch is involved.
 INSTALL_DIR=$NODE_PTY/prebuilds/android-$PTY_ARCH
 INSTALLED=$INSTALL_DIR/pty.node
 

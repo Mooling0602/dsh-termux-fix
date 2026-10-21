@@ -12,16 +12,22 @@
 //      android to LinuxProcessInspector is therefore correct, not a hack.
 //
 //   2. node-pty ships no android-arm64 prebuild.
-//      Its loader looks for prebuilds/<platform>-<arch>/pty.node, i.e.
-//      prebuilds/android-arm64/pty.node, which does not exist upstream. The
-//      bundled linux-arm64 build cannot be reused because it links against
-//      glibc's libutil.so.1, while Android uses bionic (libutil is folded into
-//      libc). The fix is to drop a locally built pty.node at that path --
-//      see scripts/build-node-pty.sh.
+//      Its loader already scans prebuilds/<platform>-<arch>/pty.node, i.e.
+//      prebuilds/android-arm64/pty.node on Termux -- upstream simply does not
+//      publish that directory. Dropping a bionic build there therefore needs no
+//      loader change at all; see scripts/build-node-pty.sh.
 //
-// Usage: patch-terminal-android.mjs <dsh-subprocess-local-dir> <node-pty-dir>
+//      An earlier revision of this patch also widened the loader's candidate
+//      list to prebuilds/linux-arm64. That was redundant (the stock array
+//      already contains prebuilds/android-arm64) and actively misleading: when
+//      the binding is missing, the extra candidate makes the error name
+//      prebuilds/linux-arm64 instead of the path that is actually absent.
+//
+// Only the inspector gate needs patching, so node-pty is not touched here.
+//
+// Usage: patch-terminal-android.mjs <dsh-subprocess-local-dir>
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const die = (message) => {
@@ -64,40 +70,28 @@ const INSPECTOR_PATCH = `\t// dsh-termux-fix: Termux reports process.platform ==
 \tif (platform === "linux" || platform === "android") return new LinuxProcessInspector(arch, internals);`;
 
 // ---------------------------------------------------------------------------
-// 2. node-pty loader -- fall back to linux-arm64 when no android prebuild exists
-// ---------------------------------------------------------------------------
 
-const PTY_LOADER_ANCHOR = `    var dirs = ['build/Release', 'build/Debug', "prebuilds/".concat(process.platform, "-").concat(process.arch)];`;
+const [subprocessDir] = process.argv.slice(2);
+if (!subprocessDir) {
+    die("usage: patch-terminal-android.mjs <dsh-subprocess-local-dir>");
+}
 
-const PTY_LOADER_PATCH = `    // dsh-termux-fix: node-pty publishes no prebuilds/android-arm64/pty.node,
-    // but an aarch64 build made against Termux/bionic works fine. Accept it
-    // from a sibling "prebuilds/linux-arm64" slot so the upstream layout stays
-    // untouched. (The stock linux-arm64 binary cannot be used: it links
-    // libutil.so.1, which bionic does not provide.)
-    var dirs = ['build/Release', 'build/Debug', "prebuilds/".concat(process.platform, "-").concat(process.arch)];
-    if (process.platform === 'android') {
-        dirs.push('prebuilds/' + (process.arch === 'arm64' ? 'linux-arm64' : process.arch));
-    }`;
+// The file name carries a build hash (runner-launch-<hash>.js), so it changes
+// whenever dsh is rebuilt. Resolve it instead of hardcoding one: a stale hash
+// would surface as a raw ENOENT stack trace rather than the deliberate
+// "upstream layout changed" message every other patcher produces.
+const launchDir = join(subprocessDir, "lib");
+const candidates = readdirSync(launchDir).filter((name) => /^runner-launch-.*\.js$/.test(name));
 
-// ---------------------------------------------------------------------------
-
-const [subprocessDir, nodePtyDir] = process.argv.slice(2);
-if (!subprocessDir || !nodePtyDir) {
-    die("usage: patch-terminal-android.mjs <dsh-subprocess-local-dir> <node-pty-dir>");
+if (candidates.length !== 1) {
+    die(`inspector gate: expected exactly one runner-launch-*.js in ${launchDir}, found ${candidates.length} (upstream layout changed)`);
 }
 
 console.log("==> patching persistent terminal");
 
-applyOnce(join(subprocessDir, "lib", "runner-launch-B2zsQ1Dz.js"), {
+applyOnce(join(launchDir, candidates[0]), {
     anchor: INSPECTOR_ANCHOR,
     replacement: INSPECTOR_PATCH,
     marker: "dsh-termux-fix: Termux reports process.platform",
     label: "createProcessInspector android allowlist",
-});
-
-applyOnce(join(nodePtyDir, "lib", "utils.js"), {
-    anchor: PTY_LOADER_ANCHOR,
-    replacement: PTY_LOADER_PATCH,
-    marker: "dsh-termux-fix: node-pty publishes no prebuilds",
-    label: "node-pty android binding lookup",
 });

@@ -230,7 +230,9 @@ if (process.platform === 'android') {
 }
 ```
 
-槽位名保持 `prebuilds/linux-arm64` 是有意为之：不动上游目录布局，重装 `node-pty` 之后包的样子和它发布的 tarball 仍然一致。
+既然这个槽位本来就在加载器的候选列表里，问题就纯粹是「把文件放对位置」：在 `prebuilds/android-arm64/pty.node` 放一份 bionic 构建即可，其余什么都不用改。`pty.cc` 用未修改的上游源码，`patch/patch-terminal-android.mjs` 也只动 `dsh-subprocess-local` 的 inspector 门禁——node-pty 本身没有打补丁。
+
+这个补丁的早期版本还往候选列表里追加过 `prebuilds/linux-arm64`。那是多余的，因为 `prebuilds/android-arm64` 本来就在数组里；而且它让报错更难读：加载器只报最后一次错误，于是缺绑定时给出的信息是 `Cannot find module './prebuilds/linux-arm64/pty.node'`，而不是真正缺失的那个路径。
 
 ## 移植到其他架构
 

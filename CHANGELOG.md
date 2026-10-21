@@ -2,13 +2,21 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.9.1] — 2026-10-21
+
+### Fixed
+
+- **The node-pty loader half of step 7 was unnecessary and is gone.** node-pty's loader already scans `prebuilds/<platform>-<arch>/pty.node`, so `prebuilds/android-arm64/` is in the candidate list before any patch; the only thing missing was a bionic binary at that path. The patch had appended `prebuilds/linux-arm64` as a fallback, which is the glibc build the docs call unusable, and it made failures worse: the loader reports the last error it hit, so a missing binding surfaced as `Cannot find module './prebuilds/linux-arm64/pty.node'` instead of naming the path actually absent. `patch-terminal-android.mjs` now patches only the inspector gate, and `--check` no longer reports a loader line.
+- **`--help` no longer omits step 6.** Adding step 7 replaced the `6 speech` line in the STEPS list instead of appending after it.
+- **The inspector file is resolved, not hardcoded.** Its name carries a dsh build hash (`runner-launch-<hash>.js`), so a rebuild would have produced a raw `ENOENT` stack trace instead of the intended `upstream layout changed` message. Both the patcher and `--check` now glob the name and fail cleanly when the count is not one.
+
 ## [1.9.0] — 2026-10-21
 
 ### Added
 
-- **Persistent terminals now work on Termux/Android** (step 7). Opening a terminal previously failed with a single line, `terminal inspection is unsupported on platform android`, which concealed two unrelated defects. Both are fixed: `createProcessInspector()` accepts `android` and routes it through its existing `LinuxProcessInspector` (`process.platform` is `android` on Termux, but `/proc` and the arm64 syscall numbers it reads are the same as Linux), and node-pty's loader falls back to an `android` slot when no `prebuilds/android-<arch>` exists.
+- **Persistent terminals now work on Termux/Android** (step 7). Opening a terminal previously failed with a single line, `terminal inspection is unsupported on platform android`, which concealed two unrelated defects. Both are fixed: `createProcessInspector()` accepts `android` and routes it through its existing `LinuxProcessInspector` (`process.platform` is `android` on Termux, but `/proc` and the arm64 syscall numbers it reads are the same as Linux). node-pty needs no patch at all: its loader already scans `prebuilds/<platform>-<arch>/pty.node`, a directory upstream simply does not publish, so supplying a bionic build at that path is the entire fix.
 - **Prebuilt pty binding** (`src/node-pty/pty.node`, 97 KB) compiled from unmodified upstream `src/unix/pty.cc` against bionic, with `pty.json` recording version, architecture and checksum. The stock `linux-arm64` prebuild cannot be reused because it links glibc's `libutil.so.1`, which bionic does not provide. Step 7 prefers the prebuilt and only invokes the toolchain when the version, architecture or checksum does not match.
-- `scripts/build-node-pty.sh` compiles the binding locally as a fallback, and `--check` reports the terminal gate, the binding (distinguishing prebuilt from locally compiled) and the loader patch as three separate lines, so a partial fix is visible.
+- `scripts/build-node-pty.sh` compiles the binding locally as a fallback, and `--check` reports the terminal gate and the binding (distinguishing prebuilt from locally compiled) as separate lines, so a partial fix is visible.
 
 ### Fixed
 

@@ -41,7 +41,8 @@ STEPS
   3  node-addon-system          no android prebuilt; substitute our binding
   4  session-persistence        SELinux blocks link(); renameat2 / copyFile
   5  verify                     load every binding and exercise it
-  7  terminal                   Android gate + no android-arm64 pty prebuild
+  6  speech                     local SenseVoice; no android prebuilt
+  7  terminal                   android gate + no android-arm64 pty prebuild
 
 NOTE
   These patches change files inside the installed dsh package. Every upgrade
@@ -199,9 +200,15 @@ check_status() {
         status "6 speech package" "not installed (enable voice-input bundle)"
     fi
 
-    # 7 terminal — two independent gates, reported separately so a partial
-    # fix is obvious: the JS allowlist alone still fails without a binding.
-    local sp_pkg=$dmod/@deepseek-ai/dsh-subprocess-local/lib/runner-launch-B2zsQ1Dz.js
+    # 7 terminal — the two gates are reported separately so a partial fix is
+    # obvious: the JS allowlist alone still fails without a binding.
+    #
+    # The inspector file name carries a dsh build hash, so resolve it instead of
+    # hardcoding one — a stale hash would report "package missing" on a healthy
+    # install.
+    local sp_dir=$dmod/@deepseek-ai/dsh-subprocess-local/lib
+    local sp_pkg
+    sp_pkg=$(ls "$sp_dir"/runner-launch-*.js 2>/dev/null | head -1)
     if [ -f "$sp_pkg" ]; then
         if grep -qF 'platform === "linux" || platform === "android"' "$sp_pkg"; then
             status "7 terminal inspector gate" "allows android"
@@ -226,13 +233,6 @@ check_status() {
     else
         status "7 pty binding" "MISSING"
     fi
-    local ptyutils=$dmod/node-pty/lib/utils.js
-    if [ -f "$ptyutils" ] && grep -qF 'dsh-termux-fix: node-pty publishes no prebuilds' "$ptyutils"; then
-        status "7 pty loader" "allows android"
-    else
-        status "7 pty loader" "NOT patched"
-    fi
-
     printf '\n'
     info "run ./install.sh to apply, or ./install.sh --step N for one step"
 }

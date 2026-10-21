@@ -221,16 +221,9 @@ dlopen failed: library "libutil.so.1" not found
 
 `forkpty(3)` and `openpty(3)` live in glibc's separate `libutil`; on bionic they are part of libc. That is also why `binding.gyp` lists `'-lutil'` only for Linux — and why a binding built for bionic must not link it at all. The two other glibc-isms to avoid are the same ones that bite the sherpa addon: no rpath (the Android linker ignores `DT_RPATH`/`DT_RUNPATH`) and no `libstdc++` expectation (Termux uses libc++).
 
-Because the fix is a location problem rather than a behaviour problem, `pty.cc` itself is used unmodified. The patch only widens the loader's candidate list:
+Because the slot is already in the loader's candidate list, this is purely a placement problem: put a bionic build at `prebuilds/android-arm64/pty.node` and nothing else has to change. `pty.cc` is used unmodified, and `patch/patch-terminal-android.mjs` touches only the inspector gate in `dsh-subprocess-local` — node-pty itself is not patched.
 
-```js
-var dirs = ['build/Release', 'build/Debug', "prebuilds/".concat(process.platform, "-").concat(process.arch)];
-if (process.platform === 'android') {
-    dirs.push('prebuilds/' + (process.arch === 'arm64' ? 'linux-arm64' : process.arch));
-}
-```
-
-The slot name stays `prebuilds/linux-arm64` on purpose: keeping the upstream layout untouched means a reinstall of `node-pty` restores a package that still looks exactly like its published tarball.
+An earlier revision of that patch also appended `prebuilds/linux-arm64` to the candidate list. It was pointless, because `prebuilds/android-arm64` is already in the array, and it made failures harder to read: the loader reports the last error it hit, so a missing binding surfaced as `Cannot find module './prebuilds/linux-arm64/pty.node'` instead of naming the path that was actually absent.
 
 ## Porting to another architecture
 
