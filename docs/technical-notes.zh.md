@@ -187,12 +187,58 @@ NEEDED  libc++_shared.so
 
 这是 bionic 构建，能加载。它唯一缺的就是那层 N-API 封装，所以第 6 步编译约 18 个 `.cc` 文件并链接到这个发布包，而不是从源码重编 sherpa-onnx 和 onnxruntime（那需要 CMake、protobuf，构建时间非常长）。
 
+## 终端 inspector 的平台守卫
+
+`dsh-subprocess-local` 用一个很小的 switch 构造进程 inspector：
+
+```js
+function createProcessInspector(platform = process.platform, arch = process.arch, internals = DEFAULT_INTERNALS) {
+	if (platform === "linux") return new LinuxProcessInspector(arch, internals);
+	if (platform === "darwin") return new MacProcessInspector(internals);
+	if (platform === "win32") return createWindowsProcessInspector();
+	throw new Error(`subprocess-local: terminal inspection is unsupported on platform ${platform}`);
+}
+```
+
+在 Termux 上 `process.platform` 是 `"android"`，所以这里直接抛错——而且是**在插件加载阶段**抛，不是在打开终端时抛，这就是整个终端服务消失而不是降级可用的原因。
+
+`LinuxProcessInspector` 读 `/proc/<pid>/stat`，并在判断进程是否在等 stdin 时读 `/proc/<pid>/task/<tid>/syscall`。这两个都是 Linux 内核接口，Android 原样提供。唯一与架构相关的是一张 syscall 号表：
+
+| | `read` | `select` | `pselect` | `poll` | `ppoll` | `epoll_wait` | `epoll_pwait` |
+|---|---|---|---|---|---|---|---|
+| x64 | 0 | 23 | 270 | 7 | 271 | 232 | 281 |
+| arm64 | 63 | — | 72 | — | 73 | — | 22 |
+
+`arm64` 那一列在 Android 上完全正确，所以 `android` 和「能用的 inspector」之间只隔着一个字符串比较。另外注意未知架构本来就优雅降级——`linuxSyscallTables()` 返回 `undefined`，`isStdinWaiting()` 返回 `false`——可见 syscall 表从来不是那道硬门槛。
+
+## 持久终端：glibc 的 `libutil` 与 bionic
+
+`node-pty` 按 `prebuilds/<platform>-<arch>/pty.node` 找原生绑定，所以 Android 上它要的是 `prebuilds/android-arm64/pty.node`，上游不发这个目录。看起来最省事的办法是复用 `prebuilds/linux-arm64/pty.node`，但它立刻失败：
+
+```
+dlopen failed: library "libutil.so.1" not found
+```
+
+`forkpty(3)` 和 `openpty(3)` 在 glibc 里属于独立的 `libutil`；在 bionic 里它们是 libc 的一部分。这也解释了为什么 `binding.gyp` 只给 Linux 列了 `'-lutil'`——而给 bionic 编的绑定根本不该链接它。另外两个要避开的 glibc 习惯和 sherpa addon 踩的是同一对坑：不加 rpath（Android 的 linker 忽略 `DT_RPATH`/`DT_RUNPATH`），也不要指望 `libstdc++`（Termux 用 libc++）。
+
+因为问题出在**位置**而不是**行为**，`pty.cc` 本身原样使用。补丁只放宽加载器的候选目录：
+
+```js
+var dirs = ['build/Release', 'build/Debug', "prebuilds/".concat(process.platform, "-").concat(process.arch)];
+if (process.platform === 'android') {
+    dirs.push('prebuilds/' + (process.arch === 'arm64' ? 'linux-arm64' : process.arch));
+}
+```
+
+槽位名保持 `prebuilds/linux-arm64` 是有意为之：不动上游目录布局，重装 `node-pty` 之后包的样子和它发布的 tarball 仍然一致。
+
 ## 移植到其他架构
 
-有三处假设 aarch64：
+有四处假设 aarch64：
 
 1. `src/node-addon-system/system.node`——预编译二进制，需重新编译 `system.cc`。
-2. `SYS_renameat2` 回退常量 `276`——见上表。
-3. `node-addon-system-android-arm64`——包名必须匹配 `${platform}-${arch}`，因为 `flock.js` 是按这个确切字符串解析的。
+2. `src/node-pty/pty.node`——预编译二进制，用 `scripts/build-node-pty.sh` 重编；加载器按 `process.arch` 找 `prebuilds/android-<arch>`，补丁无需改动。
+3. `SYS_renameat2` 回退常量 `276`——见上表。
+4. `node-addon-system-android-arm64`——包名必须匹配 `${platform}-${arch}`，因为 `flock.js` 是按这个确切字符串解析的。
 
-第 1、2、4 步与架构无关。
+第 1、2、4、7 步其余部分与架构无关。

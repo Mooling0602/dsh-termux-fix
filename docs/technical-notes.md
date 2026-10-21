@@ -187,12 +187,58 @@ NEEDED  libc++_shared.so
 
 That is a bionic build, and it loads. The only thing missing from it is the N-API wrapper, which is why step 6 compiles ~18 `.cc` files and links against that release instead of rebuilding sherpa-onnx and onnxruntime from source (which would need CMake, protobuf, and a very long build).
 
+## The terminal inspector's platform gate
+
+`dsh-subprocess-local` builds its process inspector through a small switch:
+
+```js
+function createProcessInspector(platform = process.platform, arch = process.arch, internals = DEFAULT_INTERNALS) {
+	if (platform === "linux") return new LinuxProcessInspector(arch, internals);
+	if (platform === "darwin") return new MacProcessInspector(internals);
+	if (platform === "win32") return createWindowsProcessInspector();
+	throw new Error(`subprocess-local: terminal inspection is unsupported on platform ${platform}`);
+}
+```
+
+On Termux `process.platform` is `"android"`, so this throws — and it is thrown while the plugin is being loaded, not when a terminal is opened, which is why the whole terminal service disappears rather than degrading.
+
+`LinuxProcessInspector` reads `/proc/<pid>/stat` and, to decide whether a process is waiting on stdin, `/proc/<pid>/task/<tid>/syscall`. Both are Linux-kernel interfaces that Android exposes unchanged. The one arch-specific part is a syscall-number table:
+
+| | `read` | `select` | `pselect` | `poll` | `ppoll` | `epoll_wait` | `epoll_pwait` |
+|---|---|---|---|---|---|---|---|
+| x64 | 0 | 23 | 270 | 7 | 271 | 232 | 281 |
+| arm64 | 63 | — | 72 | — | 73 | — | 22 |
+
+`arm64` is present and correct for Android, so the only thing standing between `android` and a working inspector is the string comparison. Note that an unknown architecture already degrades gracefully — `linuxSyscallTables()` returns `undefined` and `isStdinWaiting()` answers `false` — so the syscall table was never the hard gate.
+
+## Persistent terminals: glibc's `libutil` vs bionic
+
+`node-pty` resolves its native binding by looking for `prebuilds/<platform>-<arch>/pty.node`, so on Android it wants `prebuilds/android-arm64/pty.node`, which upstream does not ship. The tempting fix is to reuse `prebuilds/linux-arm64/pty.node`, and it fails immediately:
+
+```
+dlopen failed: library "libutil.so.1" not found
+```
+
+`forkpty(3)` and `openpty(3)` live in glibc's separate `libutil`; on bionic they are part of libc. That is also why `binding.gyp` lists `'-lutil'` only for Linux — and why a binding built for bionic must not link it at all. The two other glibc-isms to avoid are the same ones that bite the sherpa addon: no rpath (the Android linker ignores `DT_RPATH`/`DT_RUNPATH`) and no `libstdc++` expectation (Termux uses libc++).
+
+Because the fix is a location problem rather than a behaviour problem, `pty.cc` itself is used unmodified. The patch only widens the loader's candidate list:
+
+```js
+var dirs = ['build/Release', 'build/Debug', "prebuilds/".concat(process.platform, "-").concat(process.arch)];
+if (process.platform === 'android') {
+    dirs.push('prebuilds/' + (process.arch === 'arm64' ? 'linux-arm64' : process.arch));
+}
+```
+
+The slot name stays `prebuilds/linux-arm64` on purpose: keeping the upstream layout untouched means a reinstall of `node-pty` restores a package that still looks exactly like its published tarball.
+
 ## Porting to another architecture
 
-Three places assume aarch64:
+Four places assume aarch64:
 
 1. `src/node-addon-system/system.node` — prebuilt binary. Recompile `system.cc`.
-2. `SYS_renameat2` fallback constant `276` — see the table above.
-3. `node-addon-system-android-arm64` — the package name must match `${platform}-${arch}` because `flock.js` resolves it by that exact string.
+2. `src/node-pty/pty.node` — prebuilt binary. Recompile with `scripts/build-node-pty.sh`; the loader picks `prebuilds/android-<arch>` from `process.arch`, so no patch change is needed.
+3. `SYS_renameat2` fallback constant `276` — see the table above.
+4. `node-addon-system-android-arm64` — the package name must match `${platform}-${arch}` because `flock.js` resolves it by that exact string.
 
-Steps 1, 2 and 4 are architecture-independent.
+Steps 1, 2, 4 and 7 are otherwise architecture-independent.

@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.9.0] — 2026-10-21
+
+### Added
+
+- **Persistent terminals now work on Termux/Android** (step 7). Opening a terminal previously failed with a single line, `terminal inspection is unsupported on platform android`, which concealed two unrelated defects. Both are fixed: `createProcessInspector()` accepts `android` and routes it through its existing `LinuxProcessInspector` (`process.platform` is `android` on Termux, but `/proc` and the arm64 syscall numbers it reads are the same as Linux), and node-pty's loader falls back to an `android` slot when no `prebuilds/android-<arch>` exists.
+- **Prebuilt pty binding** (`src/node-pty/pty.node`, 97 KB) compiled from unmodified upstream `src/unix/pty.cc` against bionic, with `pty.json` recording version, architecture and checksum. The stock `linux-arm64` prebuild cannot be reused because it links glibc's `libutil.so.1`, which bionic does not provide. Step 7 prefers the prebuilt and only invokes the toolchain when the version, architecture or checksum does not match.
+- `scripts/build-node-pty.sh` compiles the binding locally as a fallback, and `--check` reports the terminal gate, the binding (distinguishing prebuilt from locally compiled) and the loader patch as three separate lines, so a partial fix is visible.
+
+### Fixed
+
+- Step 7 proves the terminal works by forking a shell and reading its echo back, rather than only `require()`ing the binding: loading the `.node` does not demonstrate that `forkpty(3)` works on bionic.
+
 ## [1.8.0] — 2026-10-21
 
 ### Added

@@ -41,7 +41,7 @@ STEPS
   3  node-addon-system          no android prebuilt; substitute our binding
   4  session-persistence        SELinux blocks link(); renameat2 / copyFile
   5  verify                     load every binding and exercise it
-  6  speech                     local SenseVoice; no android prebuilt
+  7  terminal                   Android gate + no android-arm64 pty prebuild
 
 NOTE
   These patches change files inside the installed dsh package. Every upgrade
@@ -58,6 +58,7 @@ list_steps() {
 4  session-persistence        SELinux denies link(); renameat2 / copyFile fallbacks
 5  verify                     load all bindings, check the EEXIST contract
 6  speech                     local speech-to-text via sherpa-onnx
+7  terminal                   persistent terminal: android gate + pty binding
 TXT
 }
 
@@ -198,6 +199,40 @@ check_status() {
         status "6 speech package" "not installed (enable voice-input bundle)"
     fi
 
+    # 7 terminal — two independent gates, reported separately so a partial
+    # fix is obvious: the JS allowlist alone still fails without a binding.
+    local sp_pkg=$dmod/@deepseek-ai/dsh-subprocess-local/lib/runner-launch-B2zsQ1Dz.js
+    if [ -f "$sp_pkg" ]; then
+        if grep -qF 'platform === "linux" || platform === "android"' "$sp_pkg"; then
+            status "7 terminal inspector gate" "allows android"
+        else
+            status "7 terminal inspector gate" "NOT patched"
+        fi
+    else
+        status "7 terminal inspector gate" "package missing"
+    fi
+    local ptybind=$dmod/node-pty/prebuilds/android-$(node -p "process.arch" 2>/dev/null)/pty.node
+    if [ -f "$ptybind" ]; then
+        # Report where it came from: the prebuilt ships with the repo, a
+        # compiled one is local to this machine and will not survive a
+        # dsh upgrade the same way.
+        if [ -f "$HERE/src/node-pty/pty.json" ] \
+           && [ "$(sha256sum "$ptybind" 2>/dev/null | cut -d' ' -f1)" = \
+                "$(node -e 'console.log(require(process.argv[1]).sha256)' "$HERE/src/node-pty/pty.json" 2>/dev/null)" ]; then
+            status "7 pty binding" "present, prebuilt ($(wc -c < "$ptybind") bytes)"
+        else
+            status "7 pty binding" "present, compiled here ($(wc -c < "$ptybind") bytes)"
+        fi
+    else
+        status "7 pty binding" "MISSING"
+    fi
+    local ptyutils=$dmod/node-pty/lib/utils.js
+    if [ -f "$ptyutils" ] && grep -qF 'dsh-termux-fix: node-pty publishes no prebuilds' "$ptyutils"; then
+        status "7 pty loader" "allows android"
+    else
+        status "7 pty loader" "NOT patched"
+    fi
+
     printf '\n'
     info "run ./install.sh to apply, or ./install.sh --step N for one step"
 }
@@ -232,7 +267,8 @@ run_step() {
         4) bash "$HERE/scripts/step4-selinux.sh" ;;
         5) bash "$HERE/scripts/step5-verify.sh" ;;
         6) bash "$HERE/scripts/step6-speech.sh" ;;
-        *) die "no such step: $n (valid: 0-6)" ;;
+        7) bash "$HERE/scripts/step7-terminal.sh" ;;
+        *) die "no such step: $n (valid: 0-7)" ;;
     esac
 }
 
@@ -276,7 +312,8 @@ main() {
     run_step 3; printf '\n'
     run_step 4; printf '\n'
     run_step 5; printf '\n'
-    run_step 6
+    run_step 6; printf '\n'
+    run_step 7
 
     printf '\n'
     ok "done — restart dsh"

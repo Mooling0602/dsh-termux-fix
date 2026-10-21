@@ -21,7 +21,7 @@ $ dsh web                             # 3. now boots
 
 ## Why it breaks
 
-Android is close enough to Linux to pass every superficial check, and different enough to fail at six separate points. None of them are configuration problems — each is a mismatch between what dsh assumes and what Android provides.
+Android is close enough to Linux to pass every superficial check, and different enough to fail at seven separate points. None of them are configuration problems — each is a mismatch between what dsh assumes and what Android provides.
 
 | # | Component | Assumption that breaks | Fix |
 |---|---|---|---|
@@ -31,6 +31,7 @@ Android is close enough to Linux to pass every superficial check, and different 
 | 4 | session persistence, attachments | `link(2)` works | Replace every `link()` publish with `renameat2` / `copyFile` |
 | 5 | verifying the above | — | Load every binding and exercise it |
 | 6 | local speech-to-text | An `android-arm64` sherpa-onnx binary exists | Build the N-API addon against upstream's official Termux release |
+| 7 | persistent terminal (pty) | `process.platform` is only ever linux/darwin/win32, and an `android-arm64` node-pty exists | Route the inspector through its Linux branch; ship a prebuilt `pty.node` |
 
 Step 0 is different in kind: it installs the toolchain (`clang`, `cmake`, `git`, …) those steps need. It exists because a missing `cmake` used to surface as `koffi build failed` with the real cause buried in a stack trace — see issue #1.
 
@@ -57,6 +58,22 @@ One wrinkle worth knowing: **Android's linker ignores `DT_RPATH` and `DT_RUNPATH
 The reason is not speed. **Having a working binding means cmake is never invoked**, and cmake is the least reliable part of this whole setup on Termux: issues #1 and #2 were both cmake failures (absent, then built against a newer libc++ than the one installed), and neither had anything to do with koffi. cnoke short-circuits on a valid prebuilt through `checkPrebuild()`, so with one in place neither the compiler nor cmake runs at all.
 
 The binding is N-API and therefore not tied to a Node major version, but it *is* tied to the koffi release: `koffi.json` records the version, architecture and checksum. Step 1 falls back to compiling from source when any of them does not match, so a different koffi still works — it just needs the toolchain.
+
+### Terminal: two gates, both fatal
+
+Opening a persistent terminal reports exactly one line, `terminal inspection is unsupported on platform android`, but two unrelated problems sit underneath it. Fixing either one alone still leaves the terminal closed.
+
+**First gate: `process.platform` is `android`, not `linux`.** dsh's `createProcessInspector()` accepts only `linux`/`darwin`/`win32` and throws for everything else — and it is called at plugin load, so the whole terminal service fails to register. But Android *is* the Linux kernel: `/proc` has the same layout, and the arm64 syscall numbers the inspector reads (`read`=63, `pselect`=72, `ppoll`=73, `epoll_pwait`=22) are identical. Routing it to `LinuxProcessInspector` is therefore correct on the merits, not a workaround.
+
+**Second gate: node-pty ships no Android prebuild.** Its loader looks for `prebuilds/<platform>-<arch>/pty.node`, i.e. `prebuilds/android-arm64/`, which upstream does not publish. The bundled `linux-arm64` build **cannot** be reused: it dynamically links glibc's `libutil.so.1`, and Android uses bionic, where `libutil` was folded into libc:
+
+```
+dlopen failed: library "libutil.so.1" not found
+```
+
+So it has to be built against bionic. `src/node-pty/pty.node` is such an aarch64 binding, compiled from **unmodified** upstream `src/unix/pty.cc` — `forkpty(3)` exists in bionic, so no source change is needed. It links without `-lutil` (unnecessary on bionic) and without an rpath (the Android linker ignores it).
+
+As with koffi, the prebuilt is preferred: `pty.json` records the node-pty version, architecture and checksum, and step 7 falls back to `scripts/build-node-pty.sh` when any of them does not match — which is when `clang` becomes necessary. The step then actually forks a shell and reads its echo back, because a successful `require()` alone does not prove `forkpty` works on bionic.
 
 ### The interesting one: SELinux blocks `link()`
 
@@ -234,17 +251,23 @@ scripts/
   step4-selinux.sh          link() fallbacks
   step5-verify.sh           Load and exercise every binding
   step6-speech.sh           Download upstream Termux release, build the addon
+  step7-terminal.sh         Terminal platform gate + install/build the pty binding
   build-require-builtin.sh  Clang command line replicating upstream build.ts
   build-sherpa-addon.sh     Clang command line for the sherpa N-API wrapper
+  build-node-pty.sh         Compile node-pty's pty.cc against bionic
 src/node-addon-system/
   system.cc                 N-API binding: tryLock, renameNoReplace
   system.node               Prebuilt aarch64 binding (fallback)
 src/koffi/
   koffi.node                Prebuilt aarch64 koffi binding, statx excluded
   koffi.json                Version, arch and checksum for the above
+src/node-pty/
+  pty.node                  Prebuilt aarch64 pty binding, built against bionic
+  pty.json                  Version, arch and checksum for the above
 patch/
   patch-session-persistence.mjs   Anchored patcher for the two JS packages
   patch-sherpa-addon.mjs          Library preload + sensevoice platform gate
+  patch-terminal-android.mjs      Inspector platform gate + node-pty load path
 docs/
   technical-notes.md        Deeper notes on the N-API contracts
 ```

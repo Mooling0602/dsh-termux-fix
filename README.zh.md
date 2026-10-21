@@ -21,7 +21,7 @@ $ dsh web                             # 3. 现在能起来了
 
 ## 为什么跑不起来
 
-Android 与 Linux 足够相似，能骗过所有表面检查；又足够不同，在六个独立的地方失败。这些都不是配置问题，而是 dsh 的假设与 Android 的实际能力对不上。
+Android 与 Linux 足够相似，能骗过所有表面检查；又足够不同，在七个独立的地方失败。这些都不是配置问题，而是 dsh 的假设与 Android 的实际能力对不上。
 
 | # | 组件 | 失效的假设 | 修法 |
 |---|---|---|---|
@@ -31,6 +31,7 @@ Android 与 Linux 足够相似，能骗过所有表面检查；又足够不同�
 | 4 | 会话持久化、附件 | `link(2)` 可用 | 全部改成 `renameat2` / `copyFile` |
 | 5 | 验证 | — | 加载每个绑定并实跑 |
 | 6 | 本地语音输入 | 存在 `android-arm64` 的 sherpa-onnx | 用上游官方 Termux 版编译 N-API 封装 |
+| 7 | 持久终端 (pty) | `process.platform` 只会是 linux/darwin/win32；且存在 `android-arm64` 的 node-pty | 让 inspector 走 Linux 分支；提供预编译的 `pty.node` |
 
 第 0 步性质不同：它负责装好上面几步要用的工具链（`clang`、`cmake`、`git` 等）。之所以有这一步，是因为缺 `cmake` 过去只会表现为 `koffi build failed`，真正的原因埋在堆栈里——见 issue #1。
 
@@ -57,6 +58,22 @@ Error: Local speech is unavailable for android-arm64
 这么做不是为了快。**有一份能用的绑定，就意味着 cmake 根本不会被调用**，而 cmake 恰恰是整套东西在 Termux 上最不可靠的一环：issue #1 和 #2 都是 cmake 出问题（先是没装，后来是它对着更新的 libc++ 编译、装着的 libc++ 却偏旧），两次都和 koffi 本身无关。cnoke 在 `checkPrebuild()` 里遇到有效预编译产物会直接返回，所以只要它在，编译器和 cmake 都不会启动。
 
 这份绑定是 N-API 的，因此不受 Node 大版本影响；但它绑定 koffi 的版本。`koffi.json` 记着版本、架构和校验和，任何一项对不上，第 1 步就回退到从源码编译——换个 koffi 版本依然能用，只是那时才需要工具链。
+
+### 终端：两道门，缺一不可
+
+打开持久终端时报的只有一句 `terminal inspection is unsupported on platform android`，但底下压着两个互不相干的问题，只修一个仍然是打不开。
+
+**第一道：`process.platform` 是 `android`，不是 `linux`。** dsh 的 `createProcessInspector()` 只认 `linux`/`darwin`/`win32`，其余直接抛错——而这个函数在插件加载时就调用，于是整个终端服务起不来。但 Android 内核就是 Linux：`/proc` 布局一致，inspector 读的 arm64 syscall 号（`read`=63、`pselect`=72、`ppoll`=73、`epoll_pwait`=22）也完全一样。所以让它走 `LinuxProcessInspector` 是语义正确的，不是权宜之计。
+
+**第二道：`node-pty` 没有 android 预编译产物。** 它的加载器去 `prebuilds/<platform>-<arch>/pty.node` 找，也就是 `prebuilds/android-arm64/`，上游没有这个目录。而现成的 `linux-arm64` 那份**不能直接用**：它动态链接 glibc 的 `libutil.so.1`，Android 用 bionic，`libutil` 早已并进 libc：
+
+```
+dlopen failed: library "libutil.so.1" not found
+```
+
+所以只能针对 bionic 自己编。`src/node-pty/pty.node` 就是这么来的一份 aarch64 绑定，编自**未打补丁**的上游 `src/unix/pty.cc`——`forkpty(3)` 在 bionic 上本来就有，不需要改源码。链接时不加 `-lutil`（bionic 不需要），也不加 rpath（Android 的 linker 会忽略）。
+
+和 koffi 一样优先用预编译产物，`pty.json` 记着 node-pty 版本、架构和校验和，对不上才回退到 `scripts/build-node-pty.sh` 现场编译——那样就需要 `clang` 了。第 7 步最后会真的 fork 一个 shell 并读回它的回显，因为仅仅 `require()` 成功并不能证明 `forkpty` 在 bionic 上可用。
 
 ### 最麻烦的一个：SELinux 禁止 `link()`
 
@@ -234,17 +251,23 @@ scripts/
   step4-selinux.sh          link() 回退
   step5-verify.sh           加载并实跑每个绑定
   step6-speech.sh           下载上游 Termux 发布包，编译语音 addon
+  step7-terminal.sh         终端平台守卫 + 安装/编译 pty 绑定
   build-require-builtin.sh  复刻上游 build.ts 的 clang 命令行
   build-sherpa-addon.sh     sherpa N-API 封装的 clang 命令行
+  build-node-pty.sh         针对 bionic 编译 node-pty 的 pty.cc
 src/node-addon-system/
   system.cc                 N-API 绑定：tryLock、renameNoReplace
   system.node               预编译 aarch64 绑定（回退用）
 src/koffi/
   koffi.node                预编译 aarch64 koffi 绑定，已排除 statx
   koffi.json                上者的版本、架构与校验和
+src/node-pty/
+  pty.node                  预编译 aarch64 pty 绑定，针对 bionic 编译
+  pty.json                  上者的版本、架构与校验和
 patch/
   patch-session-persistence.mjs   针对两个 JS 包的锚点补丁器
   patch-sherpa-addon.mjs          库预加载 + sensevoice 平台白名单
+  patch-terminal-android.mjs      inspector 平台守卫 + node-pty 加载路径
 docs/
   technical-notes.md        N-API 接口契约的深入说明
 ```

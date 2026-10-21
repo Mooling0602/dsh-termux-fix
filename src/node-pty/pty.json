@@ -1,0 +1,7 @@
+{
+  "nodePtyVersion": "1.2.0-beta.15",
+  "arch": "aarch64",
+  "abi": "napi",
+  "note": "Built from unmodified upstream src/unix/pty.cc against Termux/bionic: no -lutil (bionic folds it into libc), no DT_RPATH (the Android linker ignores it). N-API, so it survives Node major upgrades.",
+  "sha256": "c4369e8e2d44136cd350b08c61b3f87fea68dfc60bbc83704f218d01ed732937"
+}

@@ -2,6 +2,7 @@
 *.node
 !src/node-addon-system/system.node
 !src/koffi/koffi.node
+!src/node-pty/pty.node
 node_modules/
 build/
 *.tgz
