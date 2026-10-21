@@ -8,6 +8,9 @@
 
 `dsh` 只发布了 linux、macOS 和 Windows 版本。在 Android 上它能启动，然后在不同的层各摔一跤。这个仓库把它们收集成一个可重复运行、幂等的安装脚本。
 
+> [!IMPORTANT]
+> 本项目只保证与**最新版** `@deepseek-ai/dsh` 的兼容性，不保证与旧版 dsh 兼容。补丁是按已安装包内部的精确文本锚点打上去的，这些锚点在版本之间会移动。dsh 更新之后，请执行 `git pull` 拉取最新代码以获得对应的补丁，或者等待适配完成。锚点对不上时，相关步骤会以 `upstream layout changed` 退出，而不会打到错误的位置。
+
 ```
 $ npm install -g @deepseek-ai/dsh     # 1. 先装 dsh
 $ cd dsh-termux-fix && ./install.sh   # 2. 再打补丁

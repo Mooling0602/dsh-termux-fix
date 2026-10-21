@@ -8,6 +8,9 @@
 
 `dsh` is published for linux, macOS and Windows. On Android it starts, then falls over — differently at each layer. This repository collects the patches that make it work, as one re-runnable, idempotent installer.
 
+> [!IMPORTANT]
+> This project only guarantees compatibility with the **latest** release of `@deepseek-ai/dsh`; older versions are not supported. Patches are applied by exact-text anchors inside the installed package, and those anchors move between releases. After dsh is updated, run `git pull` to get the matching patches, or wait until they have been adapted. When an anchor no longer matches, the affected step exits with `upstream layout changed` instead of patching the wrong place.
+
 ```
 $ npm install -g @deepseek-ai/dsh     # 1. install dsh first
 $ cd dsh-termux-fix && ./install.sh   # 2. patch the installed package

@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.8.0] — 2026-10-21
+
+### Added
+
+- An `[!IMPORTANT]` alert near the top of both READMEs stating that only the **latest** `@deepseek-ai/dsh` release is supported. Patches are anchored to exact text inside the installed package and those anchors move between releases, so after a dsh update you have to `git pull` for matching patches or wait for adaptation. It also notes that a mismatched anchor exits with `upstream layout changed` rather than patching the wrong place.
+
 ## [1.7.0] — 2026-10-21
 
 ### Changed
