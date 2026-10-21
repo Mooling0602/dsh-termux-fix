@@ -36,6 +36,10 @@ each is a mismatch between what dsh assumes and what Android provides.
 | 5 | verifying the above | — | Load every binding and exercise it |
 | 6 | local speech-to-text | An `android-arm64` sherpa-onnx binary exists | Build the N-API addon against upstream's official Termux release |
 
+Step 0 is different in kind: it installs the toolchain (`clang`, `cmake`, `git`, …)
+those steps need. It exists because a missing `cmake` used to surface as
+`koffi build failed` with the real cause buried in a stack trace — see issue #1.
+
 ### Speech: two bugs behind one error
 
 Voice input fails with a single unhelpful line:
@@ -107,7 +111,7 @@ Then restart `dsh`.
 ```
 ./install.sh              Apply every step. Idempotent — safe to re-run.
 ./install.sh --check      Report status of each patch. Changes nothing.
-./install.sh --step 3     Run one step only.
+./install.sh --step 0     Run one step only (0-6).
 ./install.sh --list       List steps.
 ./install.sh --help       Full options.
 ```
@@ -127,6 +131,7 @@ dsh-termux-fix — status
   3 system binding                   present (8216 bytes)
   3 flock.js guard                   allows android
   4 session-persistence              patched (3 refs)
+  0 toolchain                        complete
   4 attachment-local                 patched (2 refs)
   6 sherpa addon                     present (616216 bytes)
   6 sensevoice platform gate         allows android
@@ -173,7 +178,10 @@ unless you cleared that directory.
   `npm root -g`.
 - Node.js ≥ 20 with headers at `$PREFIX/include/node`
   (`pkg install nodejs` provides both).
-- `clang` (`pkg install clang`).
+- `clang`, `cmake`, `make`, `git`, `tar`, `curl`.
+  **Step 0 installs these via `pkg`** and is a no-op when they are present, so
+  you do not normally need to install them by hand. They are still listed here
+  because `--step 1` and later assume them if you skip step 0.
 - Network access for steps 2 and 6 (clone/compile sources, fetch the sherpa
   release). Both are skipped when their output is already present.
 - For speech, the voice-input bundle enabled in your dsh profile.
@@ -208,6 +216,12 @@ probe picks whichever answers first within 3s. To force one origin, set
 `modelOrigin: https://hf-mirror.com` in the plugin config. Models are fetched on
 first use from the dsh settings page, not by this script.
 
+**`koffi build failed`** — before step 0 existed, this was all you got when
+`cmake` was missing; the real cause (`CMake does not seem to be available`)
+was buried in a cnoke stack trace. Run `./install.sh --step 0` to install the
+toolchain, or `pkg install cmake` directly. `--check` now reports
+`0 toolchain  MISSING: cmake` so you can see it before a build fails.
+
 **`upstream layout changed`** — a step script found its anchor a number of times
 other than exactly 1. Upstream moved the code. Do not force it; open an issue
 with the dsh version.
@@ -228,6 +242,7 @@ loudly. Failing to patch is the safe outcome.
 install.sh                  Entry point: --check / --step / --list / --help
 scripts/
   lib.sh                    Shared helpers, module discovery
+  step0-deps.sh             Install the toolchain via pkg
   step1-koffi.sh            statx -> fstatat
   step2-require-builtin.sh  Clone source, compile the missing binding
   step3-system.sh           Build/install flock + renameNoReplace, fix guard

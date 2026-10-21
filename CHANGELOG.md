@@ -3,6 +3,26 @@
 All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.2.0] — 2026-10-21
+
+### Added
+
+- **Step 0: install the toolchain.** `scripts/step0-deps.sh` runs
+  `pkg install` for `clang`, `cmake`, `make`, `git`, `tar` and `curl`, and is a
+  no-op when all of them are present. It runs first in the default flow.
+- `--check` reports `0 toolchain`, listing only the packages that are actually
+  missing.
+
+### Fixed
+
+- **Issue #1 — a missing `cmake` produced an unreadable failure.** Step 1
+  shelled out to koffi's `cnoke.cjs`, which throws
+  `CMake does not seem to be available` from inside its stack; the script
+  reduced that to `koffi build failed`, with no hint about what to install.
+  Step 1 now checks for `cmake` up front and names the fix
+  (`pkg install cmake`, or `./install.sh --step 0`), and the generic failure
+  message points at the underlying error.
+
 ## [1.1.0] — 2026-10-21
 
 ### Added

@@ -24,7 +24,7 @@ USAGE
 
 OPTIONS
   --check          Report the status of every patch without changing anything.
-  --step N         Run only step N (1-6).
+  --step N         Run only step N (0-6).
   --list           List the steps.
   -h, --help       Show this help.
 
@@ -35,6 +35,7 @@ ENVIRONMENT
   NO_COLOR         Disable coloured output.
 
 STEPS
+  0  deps                       install clang, cmake, git via pkg
   1  koffi                      statx() is unavailable in the Android NDK
   2  node-addon-require-builtin no android prebuilt; compile from source
   3  node-addon-system          no android prebuilt; substitute our binding
@@ -50,6 +51,7 @@ TXT
 
 list_steps() {
     cat <<'TXT'
+0  deps                       install the toolchain (clang, cmake, git, ...)
 1  koffi                      statx() unavailable in Android NDK headers
 2  node-addon-require-builtin no android prebuilt; compiled from upstream source
 3  node-addon-system          no android prebuilt (source private); substitute binding
@@ -71,6 +73,19 @@ check_status() {
     printf '  platform      %s %s\n\n' "$(uname -s)" "$(uname -m)"
 
     status() { printf '  %-34s %s\n' "$1" "$2"; }
+
+    # 0 toolchain — report only what is actually missing, so the line stays
+    # quiet on a healthy install.
+    local missing=''
+    for pkg in clang cmake make git nodejs tar curl; do
+        dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null \
+            | grep -q "install ok installed" || missing="$missing $pkg"
+    done
+    if [ -z "$missing" ]; then
+        status "0 toolchain" "complete"
+    else
+        status "0 toolchain" "MISSING:$missing"
+    fi
 
     # 1 koffi
     local kbase=$dmod/koffi/lib/native/base/base.cc
@@ -168,13 +183,14 @@ check_status() {
 run_step() {
     local n=$1
     case "$n" in
+        0) bash "$HERE/scripts/step0-deps.sh" ;;
         1) bash "$HERE/scripts/step1-koffi.sh" ;;
         2) bash "$HERE/scripts/step2-require-builtin.sh" ;;
         3) bash "$HERE/scripts/step3-system.sh" ;;
         4) bash "$HERE/scripts/step4-selinux.sh" ;;
         5) bash "$HERE/scripts/step5-verify.sh" ;;
         6) bash "$HERE/scripts/step6-speech.sh" ;;
-        *) die "no such step: $n (valid: 1-6)" ;;
+        *) die "no such step: $n (valid: 0-6)" ;;
     esac
 }
 
@@ -211,6 +227,7 @@ main() {
     info "dsh $ver at $dmod"
     printf '\n'
 
+    run_step 0; printf '\n'
     run_step 1; printf '\n'
     run_step 2; printf '\n'
     run_step 3; printf '\n'

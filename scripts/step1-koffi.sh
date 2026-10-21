@@ -51,6 +51,15 @@ case "$current" in
 esac
 
 info "compiling koffi (1-2 minutes)"
+
+# cnoke shells out to cmake and dies with "CMake does not seem to be available"
+# buried in a stack trace, which then surfaces as the useless top-level
+# "koffi build failed" (issue #1). Check up front so the message is actionable.
+if ! command -v cmake >/dev/null 2>&1; then
+    die "cmake not found — koffi's build frontend needs it. Install it with: pkg install cmake
+       Or run: ./install.sh --step 0"
+fi
+
 ( cd "$KBASE" && node ./cnoke.cjs -P . -D src/koffi --prebuild --release >/dev/null ) \
-    || die "koffi build failed"
+    || die "koffi build failed (run without --step to see the underlying error)"
 ok "compiled"

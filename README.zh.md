@@ -33,6 +33,10 @@ Android 与 Linux 足够相似，能骗过所有表面检查；又足够不同�
 | 5 | 验证 | — | 加载每个绑定并实跑 |
 | 6 | 本地语音输入 | 存在 `android-arm64` 的 sherpa-onnx | 用上游官方 Termux 版编译 N-API 封装 |
 
+第 0 步性质不同：它负责装好上面几步要用的工具链（`clang`、`cmake`、`git` 等）。
+之所以有这一步，是因为缺 `cmake` 过去只会表现为 `koffi build failed`，真正的
+原因埋在堆栈里——见 issue #1。
+
 ### 语音：一行报错，两个毛病
 
 语音输入失败时只给一句没什么信息量的话：
@@ -96,7 +100,7 @@ cd dsh-termux-fix
 ```
 ./install.sh              应用全部步骤。幂等，可重复运行。
 ./install.sh --check      只报告各补丁状态，不做任何改动。
-./install.sh --step 3     只跑某一步。
+./install.sh --step 3     只跑某一步（0-6）。
 ./install.sh --list       列出步骤。
 ./install.sh --help       完整选项。
 ```
@@ -116,6 +120,7 @@ dsh-termux-fix — status
   3 system binding                   present (8216 bytes)
   3 flock.js guard                   allows android
   4 session-persistence              patched (3 refs)
+  0 toolchain                        complete
   4 attachment-local                 patched (2 refs)
   6 sherpa addon                     present (616216 bytes)
   6 sensevoice platform gate         allows android
@@ -156,7 +161,9 @@ dsh-termux-fix — status
   `npm install -g @deepseek-ai/dsh`；这些补丁改的是已安装包，没装就无处可改。
   用 `npm root -g` 确认位置。
 - Node.js ≥ 20，且头文件位于 `$PREFIX/include/node`（`pkg install nodejs` 已包含）。
-- `clang`（`pkg install clang`）。
+- `clang`、`cmake`、`make`、`git`、`tar`、`curl`。
+  **第 0 步会用 `pkg` 装好这些**，已装时自动跳过，所以一般不用手动装。
+  之所以还列在这里，是因为如果你跳过第 0 步，第 1 步及之后会假定它们存在。
 - 第 2、6 步需要网络（克隆源码、下载 sherpa 发布包）；产物已存在时跳过。
 - 语音功能需要在 dsh profile 里启用 voice-input bundle。
   没启用时 `--check` 会显示 `6 speech package  not installed`。
@@ -186,6 +193,11 @@ dsh 的原子写入用了 `link()`。改用 `bash` 重定向写文件即可。�
 `modelOrigin: https://hf-mirror.com`。模型是在 dsh 设置页首次使用时下载的，
 不由本脚本负责。
 
+**`koffi build failed`** —— 在第 0 步出现之前，缺 `cmake` 时你只会看到这一句，
+真正的原因（`CMake does not seem to be available`）埋在 cnoke 的堆栈里。
+跑 `./install.sh --step 0` 装工具链，或直接 `pkg install cmake`。
+现在 `--check` 会显示 `0 toolchain  MISSING: cmake`，在构建失败之前就能看到。
+
 **`upstream layout changed`** —— 某一步的锚点出现的次数不是恰好 1 次，说明上游挪了代码。
 不要强行绕过；带上 dsh 版本提 issue。
 
@@ -203,6 +215,7 @@ dsh 的原子写入用了 `link()`。改用 `bash` 重定向写文件即可。�
 install.sh                  入口：--check / --step / --list / --help
 scripts/
   lib.sh                    共享函数、模块定位
+  step0-deps.sh             用 pkg 安装工具链
   step1-koffi.sh            statx -> fstatat
   step2-require-builtin.sh  克隆源码，编译缺失的绑定
   step3-system.sh           构建/安装 flock + renameNoReplace，修平台守卫
