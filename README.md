@@ -270,6 +270,27 @@ koffi 3.1.1 and sherpa-onnx 1.13.8.
 inside an installed npm package. Upgrades undo it, upstream test suites do not
 cover it, and dsh internals may change without notice.
 
+## Reporting an issue
+
+The patches track an unstable target: **a step can stop working because dsh
+changed, not because this repository broke.** Before filing, pull the latest
+commit — the fix may already be there.
+
+```bash
+cd dsh-termux-fix
+git pull
+./install.sh --check        # paste the full output
+git rev-parse --short HEAD  # paste this too
+```
+
+Include the short commit hash from `git rev-parse --short HEAD`. Without it a
+report cannot be reproduced: the behaviour you see may be from an older
+revision, and the maintainer has no way to tell which code you actually ran.
+Also include your dsh version, `node -v`, and `uname -m`.
+
+The issue template asks for these. Issues without a commit hash may be closed
+with a request to re-file after pulling.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

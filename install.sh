@@ -66,7 +66,14 @@ check_status() {
     dmod=$(resolve_dsh_modules)
     ver=$(dsh_version "$dmod")
 
+    # The commit identifies exactly which revision produced this output. It is
+    # printed so it travels with any pasted report: without it a bug cannot be
+    # reproduced, because the behaviour may differ between commits.
+    local commit
+    commit=$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo 'unknown')
+
     printf '%sdsh-termux-fix — status%s\n\n' "$C_BOLD" "$C_RESET"
+    printf '  commit        %s\n' "$commit"
     printf '  dsh version   %s\n' "$ver"
     printf '  modules       %s\n' "$dmod"
     printf '  node          %s\n' "$(node -v)"
@@ -180,6 +187,26 @@ check_status() {
     info "run ./install.sh to apply, or ./install.sh --step N for one step"
 }
 
+# Warn when the checkout is behind origin/main. Deliberately advisory: this
+# must never fail a run, and must stay silent when git is unavailable, the
+# directory is not a repo (e.g. an unpacked tarball), or the network is down.
+warn_if_stale() {
+    git -C "$HERE" rev-parse --git-dir >/dev/null 2>&1 || return 0
+
+    local branch upstream behind
+    branch=$(git -C "$HERE" rev-parse --abbrev-ref HEAD 2>/dev/null) || return 0
+    upstream=$(git -C "$HERE" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) || return 0
+
+    # No network call: compare against the local remote-tracking ref. It is only
+    # as fresh as the last fetch, which is the honest limit of an offline check.
+    behind=$(git -C "$HERE" rev-list --count "HEAD..$upstream" 2>/dev/null) || return 0
+
+    if [ "${behind:-0}" -gt 0 ]; then
+        warn "your checkout is $behind commit(s) behind $upstream"
+        dim "  run 'git pull' first — the fix may already be in main" >&2
+    fi
+}
+
 run_step() {
     local n=$1
     case "$n" in
@@ -210,6 +237,7 @@ main() {
 
     require_android_or_linux
     require_arm64_note
+    warn_if_stale
 
     if [ "$mode" = check ]; then
         check_status

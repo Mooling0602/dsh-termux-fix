@@ -242,6 +242,24 @@ koffi 3.1.1、sherpa-onnx 1.13.8 上验证。
 **这不是官方支持路径。** 这里的一切都在修改已安装 npm 包内部的文件。
 升级即失效，上游测试不覆盖，dsh 内部实现也可能随时改变。
 
+## 提交 Issue
+
+这些补丁的目标一直在变：**某一步失效，往往是因为 dsh 改了，而不是本仓库坏了。**
+提 issue 之前先拉取最新提交，可能已经修好了。
+
+```bash
+cd dsh-termux-fix
+git pull
+./install.sh --check        # 完整粘贴输出
+git rev-parse --short HEAD  # 这个也要贴
+```
+
+请附上 `git rev-parse --short HEAD` 的短 hash。没有它，问题没法复现：
+你看到的行为可能来自旧版本，而维护者无从判断你实际跑的是哪份代码。
+同时附上 dsh 版本、`node -v` 和 `uname -m`。
+
+Issue 模板会要求填这些。缺少 commit hash 的 issue 可能会被要求拉取后重新提交。
+
 ## 许可证
 
 MIT —— 见 [LICENSE](LICENSE)。

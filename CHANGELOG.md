@@ -3,6 +3,21 @@
 All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.3.0] — 2026-10-21
+
+### Added
+
+- **Issue template** (`.github/ISSUE_TEMPLATE/bug_report.yml`) that makes the
+  commit hash a required field, alongside `--check` output and versions.
+- `--check` prints `commit <short-hash>` first, so the exact revision travels
+  with any pasted report.
+- `warn_if_stale` prints an advisory warning when the checkout is behind its
+  upstream branch, prompting a `git pull` before a stale bug is reported.
+  Silent when git is absent, the directory is not a repo, or no upstream is
+  configured; it never fails a run.
+- **"Reporting an issue"** section in both READMEs, explaining why pulling
+  first matters and how to obtain the short hash.
+
 ## [1.2.0] — 2026-10-21
 
 ### Added
