@@ -12,12 +12,13 @@
 > 本项目只保证与**最新版** `@deepseek-ai/dsh` 的兼容性，不保证与旧版 dsh 兼容。补丁是按已安装包内部的精确文本锚点打上去的，这些锚点在版本之间会移动。dsh 更新之后，请执行 `git pull` 拉取最新代码以获得对应的补丁，或者等待适配完成。锚点对不上时，相关步骤会以 `upstream layout changed` 退出，而不会打到错误的位置。
 
 ```
-$ npm install -g @deepseek-ai/dsh     # 1. 先装 dsh
-$ cd dsh-termux-fix && ./install.sh   # 2. 再打补丁
-$ dsh web                             # 3. 现在能起来了
+$ git clone https://github.com/Mooling0602/dsh-termux-fix
+$ cd dsh-termux-fix
+$ ./scripts/install-dsh.sh            # 装 dsh，然后打补丁
+$ dsh web                             # 现在能起来了
 ```
 
-> **顺序不能反。** 这些补丁改的是**已安装包内部**的文件，所以必须先装好 `@deepseek-ai/dsh` 再跑 `install.sh`。没装的话脚本会停下来提示你装。每次 `npm install -g @deepseek-ai/dsh` 之后都要重跑 `./install.sh`。
+> **要用 `--ignore-scripts` 装，不能直接 `npm install -g`。** 直接跑 `npm install -g @deepseek-ai/dsh` 在 Termux/Android 上**会失败**：koffi 的 install 脚本要编译 C++，其中的 `statx()` 分支在 bionic 上编不过，脚本以 1 退出，npm 随后回滚整个全局安装，结果一个 dsh 都没留下。`scripts/install-dsh.sh` 用 `--ignore-scripts` 安装，然后跑 `./install.sh`，把跳过的脚本本该产出的原生绑定全部补上。加 `--with-tui` 可以在同一次安装里带上 `@deepseek-harness-tui/dsh-tui`。
 
 ## 为什么跑不起来
 
@@ -95,18 +96,31 @@ dsh 在三处用 `link()`，而且三处都在做同一件特定的事：**原�
 ```bash
 git clone https://github.com/Mooling0602/dsh-termux-fix
 cd dsh-termux-fix
-./install.sh --check    # 先看缺什么
-./install.sh            # 全部应用
+./scripts/install-dsh.sh --with-tui   # 装 dsh + dsh-tui，然后打补丁
+./install.sh --check                  # 看还缺什么（全绿就装完了）
 ```
 
-然后重启 `dsh`。
+然后重启 `dsh`。如果 dsh 已经装好、只想打补丁，单独跑 `./install.sh` 仍然是对的。
+
+### 手动安装 dsh
+
+`scripts/install-dsh.sh` 只是把下面两步包了一下：
+
+```bash
+npm install -g --ignore-scripts @deepseek-ai/dsh    # --ignore-scripts 是必须的
+./install.sh                                        # 补上被跳过的绑定
+```
+
+这个 flag 不是图快。开着脚本时，koffi 的 `install` 钩子会跑 CNoke，尝试编译 `lib/native/base/base.cc`，在 `statx()` 调用处（第 2967 行）报 `cannot initialize a member subobject of type '__u32' ... with an lvalue of type 'const char *'` 并以 1 退出。npm 把任何一个生命周期脚本失败都当成整个安装失败，回滚整棵树，于是 dsh 根本没装上。跳过脚本、之后再打补丁，得到的最终状态一样，只是不做那次注定失败的编译。
+
+**装第二个会把 dsh 拉成依赖的全局包**（比如 `dsh-tui`）时同理：那里也要带 `--ignore-scripts`，否则 koffi 的钩子会再触发一次，把那次安装一并回滚。装完要重跑 `./install.sh`，因为新安装把已有补丁抹掉了。
 
 ## 用法
 
 ```
 ./install.sh              应用全部步骤。幂等，可重复运行。
 ./install.sh --check      只报告各补丁状态，不做任何改动。
-./install.sh --step 3     只跑某一步（0-6）。
+./install.sh --step 3     只跑某一步（0-7）。
 ./install.sh --list       列出步骤。
 ./install.sh --help       完整选项。
 ```
@@ -145,7 +159,7 @@ dsh-termux-fix — status
 
 ## 每次升级之后
 
-> **补丁改的是已安装包内的文件，任何重装或升级都会把它们抹掉。** 每次 `npm install -g @deepseek-ai/dsh` 之后都要重新跑 `./install.sh`。
+> **补丁改的是已安装包内的文件，任何重装或升级都会把它们抹掉。** 升级就是重跑 `./scripts/install-dsh.sh`（或者 dsh 已装好时，自己跑 `npm install -g --ignore-scripts @deepseek-ai/dsh` 再跑 `./install.sh`）。注意：用常规方式重装——不带 `--ignore-scripts`——不只是抹掉补丁，而是直接失败并把 dsh 回滚掉。
 
 只有 `koffi` 需要真正重新编译；另外两个走 N-API v9，能跨 Node 版本存活。第 2 步在绑定已存在时会直接跳过，所以重跑成本很低。
 
@@ -154,7 +168,7 @@ dsh-termux-fix — status
 ## 要求
 
 - Android 上的 Termux，**aarch64**（arm64）。预编译的 `system.node` 仅支持 aarch64；其他架构需从 `system.cc` 重新编译。第 6 步同样依赖上游的 `android-aarch64` 发布包。
-- **先装好 `@deepseek-ai/dsh`。** 跑 `./install.sh` 之前先 `npm install -g @deepseek-ai/dsh`；这些补丁改的是已安装包，没装就无处可改。用 `npm root -g` 确认位置。
+- **先装好 `@deepseek-ai/dsh`，且不能带生命周期脚本。** 跑 `./install.sh` 之前先跑 `./scripts/install-dsh.sh`（或 `npm install -g --ignore-scripts @deepseek-ai/dsh`）；这些补丁改的是已安装包，没装就无处可改。直接 `npm install -g @deepseek-ai/dsh` 会卡在 koffi 编译上并回滚，什么都不会装——见[手动安装 dsh](#手动安装-dsh)。用 `npm root -g` 确认位置。
 - Node.js ≥ 20，且头文件位于 `$PREFIX/include/node`（`pkg install nodejs` 已包含）。
 - `clang`、`cmake`、`make`、`git`、`tar`、`curl`。**第 0 步会用 `pkg` 装好这些**，已装时自动跳过，所以一般不用手动装。之所以还列在这里，是因为如果你跳过第 0 步，第 1 步及之后会假定它们存在。其中 `cmake` 只在预编译的 koffi 绑定不能用时才需要——见下。
 - 第 2、6 步需要网络（克隆源码、下载 sherpa 发布包）；产物已存在时跳过。
@@ -232,6 +246,14 @@ pkg reinstall cmake     # 仅当 libc++ 是新的、cmake 自身损坏时
 
 **`upstream layout changed`**——某一步的锚点出现的次数不是恰好 1 次，说明上游挪了代码。不要强行绕过；带上 dsh 版本提 issue。
 
+### 已知缺口
+
+有两种失败**不是**本项目能修的，也都与用 `--ignore-scripts` 安装无关。它们属于"缺平台包"问题，没有补丁可打：这两个包都在运行时按平台解析一个只能由 npm 通过 `optionalDependencies` 提供的二进制，而 registry 上两者都没有 Android 条目。
+
+**`Could not load the "sharp" module using the android-arm64 runtime`**——图片附件。`sharp@0.35.x` 没有纯 JS 兜底，运行时会选 `@img/sharp-<platform>-<arch>` 包；这些包的 `os` 字段里都没有 `android`，于是 npm 全部跳过，只装上了 `@img/colour`。它由 `@deepseek-ai/dsh-attachment-local` 惰性调用，所以插件本身能加载，纯文本使用不受影响——只有第一次做图片归一化时抛错。本仓库无法修：要让图片链路可用，得把 `sharp` 或 libvips 针对 bionic 编出来，而上游没有这样的发布包。
+
+**`Could not find @vscode/ripgrep-android-arm64`**——`glob` 与 `grep` 工具报 `SEARCH_FAILED ... ripgrep launch failed`。`dsh-tool-fs-search` 通过 `@vscode/ripgrep` 定位 ripgrep，后者要求存在 `@vscode/ripgrep-<platform>-<arch>/bin/rg`；registry 上有十二个这样的包，没有一个面向 Android。Termux 自己有 `/data/data/com.termux/files/usr/bin/rg`，但 dsh 没有"回退到系统 rg"的逻辑，而这个解析是包内部的 `require.resolve()`，默认 profile 里没有任何地方能改写它。同样是惰性的：第一次搜索才报，启动时没事。已记录在上游，此处未打补丁。
+
 ## 实现说明
 
 每一步都是 [`scripts/`](scripts/) 下的独立脚本，可单独运行。安装器只负责编排与汇报。
@@ -243,6 +265,7 @@ pkg reinstall cmake     # 仅当 libc++ 是新的、cmake 自身损坏时
 ```
 install.sh                  入口：--check / --step / --list / --help
 scripts/
+  install-dsh.sh            用 --ignore-scripts 装 dsh，然后打补丁
   lib.sh                    共享函数、模块定位
   step0-deps.sh             用 pkg 安装工具链
   step1-koffi.sh            安装预编译绑定，不匹配才 statx -> fstatat 编译

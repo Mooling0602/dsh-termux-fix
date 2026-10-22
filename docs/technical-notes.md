@@ -137,6 +137,47 @@ awk '/^static StatResult[[:space:]]+StatAt\(/ { infn = 1; next }
 
 Verified both ways: restoring the file to its unpatched state and running the patch reproduces the patched file byte-for-byte, and re-running on an already patched file leaves the md5 unchanged.
 
+## Why the install has to skip lifecycle scripts
+
+The patch above only helps if koffi gets a chance to be patched. A plain `npm install -g @deepseek-ai/dsh` never gets there, and the reason is a control-flow trap rather than a compile error.
+
+koffi declares `scripts.install = "node ./cnoke.cjs -P . -D src/koffi --prebuild --release"`. CNoke's flow is:
+
+1. `checkCompatibility()` — only node and NAPI version checks; it passes.
+2. `checkPrebuild()` — decides whether a usable binding already exists by asking Node to load the package: `spawnSync(process.execPath, ["-e", "require(process.argv[1])", package_dir])`, and testing `proc.status === 0`.
+3. On false, print `Failed to load prebuilt binary, rebuilding from source`, then `checkCMake()`, `configure()` and `cmake --build`.
+4. Any failure in the build rethrows as `Failed to run build step`, and the top-level handler calls `process.exit(1)`.
+
+`checkPrebuild()` can only return true when a binding is already present. On a fresh install there is none, because koffi publishes no `android-arm64` prebuilt (its `optionalDependencies` have entries for linux, darwin, win32, freebsd, openbsd and loongarch, but not android). So the hook always falls through to step 3, always attempts the compile, and always fails at `base.cc:2967` — the exact line the patch fixes, in a file the patch cannot reach yet, because nothing is installed for it to patch.
+
+npm's contribution is to make that fatal rather than cosmetic: a non-zero `install` script fails the package install, and a failed package in a global install rolls back the whole transaction. The observed end state is therefore *no dsh at all*, not a dsh with a broken koffi.
+
+Verified directly, on a clean prefix with a pristine koffi tree:
+
+```
+$ npm install -g --prefix $TMPDIR/plain @deepseek-ai/dsh
+...
+Failed to load prebuilt binary, rebuilding from source
+... base.cc:2967: error: cannot initialize a member subobject of type '__u32'
+    (aka 'unsigned int') with an lvalue of type 'const char *'
+make: *** [Makefile:91: all] Error 2
+Failed to run build step
+$ echo $?
+1
+```
+
+and the two ways to break the loop:
+
+- make the compile succeed (patch `base.cc`, then build) — impossible before install, chicken and egg;
+- skip the hook entirely, then supply the binding afterwards.
+
+`scripts/install-dsh.sh` takes the second: `--ignore-scripts`, then `./install.sh`. The end state is the same or better — step 1 prefers a prebuilt binding over a source build, so CNoke is not needed at all on a normal machine.
+
+Two consequences worth knowing:
+
+- **The same hook fires when any global package pulls dsh in.** Installing `@deepseek-harness-tui/dsh-tui` alongside dsh runs koffi's hook again, because koffi is a hard dependency of `@deepseek-ai/dsh-fs-local`. Pass `--ignore-scripts` to that install too. (`--omit=optional` is not a way out: koffi is a regular dependency, and dsh's own `optionalDependencies` is empty.)
+- **`--ignore-scripts` is tree-wide, not global-install-wide.** It also silences `node-pty`'s `install` script, whose prebuild fetcher produces nothing usable on Android either — upstream publishes no `android-arm64` prebuild, which is what step 7 supplies. Steps 2, 3 and 6 cover the remaining native packages.
+
 ## Speech: why rpath does not work on Android
 
 Worth writing down, because the failure looks like a missing library and sends you chasing paths.

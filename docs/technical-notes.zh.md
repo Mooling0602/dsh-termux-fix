@@ -137,6 +137,47 @@ awk '/^static StatResult[[:space:]]+StatAt\(/ { infn = 1; next }
 
 双向验证过：把文件还原成未打补丁状态再跑一遍，得到与补丁态**逐字节一致**的结果；对已打补丁的文件重跑，md5 不变。
 
+## 为什么安装时必须跳过生命周期脚本
+
+上面的补丁只有在 koffi 有机会被打补丁时才起作用。而直接 `npm install -g @deepseek-ai/dsh` 根本走不到那一步，原因是一个控制流陷阱，而不是编译错误本身。
+
+koffi 声明了 `scripts.install = "node ./cnoke.cjs -P . -D src/koffi --prebuild --release"`。CNoke 的流程是：
+
+1. `checkCompatibility()`——只检查 node 与 NAPI 版本，能过。
+2. `checkPrebuild()`——用 Node 去加载这个包来判断绑定是否已可用：`spawnSync(process.execPath, ["-e", "require(process.argv[1])", package_dir])`，看 `proc.status === 0`。
+3. 返回 false 时打印 `Failed to load prebuilt binary, rebuilding from source`，然后 `checkCMake()`、`configure()`、`cmake --build`。
+4. 构建中任何失败都会重新抛成 `Failed to run build step`，顶层处理器调用 `process.exit(1)`。
+
+`checkPrebuild()` 只有在绑定已经存在时才可能返回 true。全新安装时并不存在，因为 koffi 没有发布 `android-arm64` 预编译包（它的 `optionalDependencies` 覆盖了 linux、darwin、win32、freebsd、openbsd 和 loongarch，唯独没有 android）。所以这个钩子必然掉进第 3 步，必然尝试编译，也必然在 `base.cc:2967` 失败——那正是补丁要修的行，但补丁还够不到这个文件，因为此刻还没有任何东西可打补丁。
+
+npm 的作用是把这件事从"无关紧要"变成"致命"：`install` 脚本非零退出即判定该包安装失败，而全局安装中任何一个包失败都会回滚整个事务。所以最终状态是**根本没有 dsh**，而不是"dsh 装上了但 koffi 坏了"。
+
+在一个干净的 prefix 上用未打补丁的 koffi 实测：
+
+```
+$ npm install -g --prefix $TMPDIR/plain @deepseek-ai/dsh
+...
+Failed to load prebuilt binary, rebuilding from source
+... base.cc:2967: error: cannot initialize a member subobject of type '__u32'
+    (aka 'unsigned int') with an lvalue of type 'const char *'
+make: *** [Makefile:91: all] Error 2
+Failed to run build step
+$ echo $?
+1
+```
+
+打破这个循环只有两条路：
+
+- 让编译成功（先打 `base.cc` 再构建）——装之前做不到，鸡生蛋问题；
+- 完全跳过这个钩子，事后再补绑定。
+
+`scripts/install-dsh.sh` 走第二条：`--ignore-scripts`，然后 `./install.sh`。最终状态相同甚至更好——第 1 步优先使用预编译绑定而不是源码构建，所以在正常机器上根本用不到 CNoke。
+
+有两点值得知道：
+
+- **任何把 dsh 拉成依赖的全局包都会再触发同一个钩子。** 把 `@deepseek-harness-tui/dsh-tui` 和 dsh 一起装时，koffi 的钩子会再跑一次，因为 koffi 是 `@deepseek-ai/dsh-fs-local` 的硬依赖。那次安装同样要带 `--ignore-scripts`。（`--omit=optional` 不是出路：koffi 是常规依赖，而 dsh 自己的 `optionalDependencies` 是空的。）
+- **`--ignore-scripts` 是整棵树生效的，不只针对全局安装本身。** 它同时会静默 `node-pty` 的 `install` 脚本——那个预编译下载器在 Android 上也产不出可用的东西，上游没有发布 `android-arm64` 预编译包，而第 7 步提供的正是它。其余原生包由第 2、3、6 步覆盖。
+
 ## 语音：为什么 rpath 在 Android 上不管用
 
 这条值得记下来，因为这个失败看起来像"缺库"，会让人一路去查路径。

@@ -7,8 +7,14 @@
 #   ./install.sh --step 3     run a single step
 #   ./install.sh --help
 #
-# Re-run after every `npm install -g @deepseek-ai/dsh` upgrade: these patches
-# modify the installed package contents and are wiped by a reinstall.
+# This script patches an *existing* dsh. To install dsh and patch it in one go
+# use ./scripts/install-dsh.sh: a bare `npm install -g @deepseek-ai/dsh` is
+# fatal on Android, because koffi's install script cannot compile and npm rolls
+# the whole global install back. That wrapper installs with --ignore-scripts and
+# then runs this script.
+#
+# Re-run after every dsh upgrade: these patches modify the installed package
+# contents and are wiped by a reinstall.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -24,9 +30,18 @@ USAGE
 
 OPTIONS
   --check          Report the status of every patch without changing anything.
-  --step N         Run only step N (0-6).
+  --step N         Run only step N (0-7).
   --list           List the steps.
   -h, --help       Show this help.
+
+INSTALLING DSH FIRST
+  A bare `npm install -g @deepseek-ai/dsh` aborts on Termux/Android: koffi's
+  install script compiles C++ that does not build against bionic, and a failing
+  lifecycle script rolls back the entire global install. Install with scripts
+  skipped and let the steps below supply every binding:
+
+    ./scripts/install-dsh.sh              # dsh
+    ./scripts/install-dsh.sh --with-tui   # dsh + dsh-tui
 
 ENVIRONMENT
   DSH_MODULES      Path to @deepseek-ai/dsh/node_modules. Default: npm root -g
@@ -46,7 +61,8 @@ STEPS
 
 NOTE
   These patches change files inside the installed dsh package. Every upgrade
-  or reinstall wipes them — re-run this script afterwards.
+  or reinstall wipes them — re-run this script afterwards, or better, re-run
+  ./scripts/install-dsh.sh, which does the install and the patching in order.
 TXT
 }
 

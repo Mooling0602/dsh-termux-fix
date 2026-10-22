@@ -12,12 +12,13 @@
 > This project only guarantees compatibility with the **latest** release of `@deepseek-ai/dsh`; older versions are not supported. Patches are applied by exact-text anchors inside the installed package, and those anchors move between releases. After dsh is updated, run `git pull` to get the matching patches, or wait until they have been adapted. When an anchor no longer matches, the affected step exits with `upstream layout changed` instead of patching the wrong place.
 
 ```
-$ npm install -g @deepseek-ai/dsh     # 1. install dsh first
-$ cd dsh-termux-fix && ./install.sh   # 2. patch the installed package
-$ dsh web                             # 3. now boots
+$ git clone https://github.com/Mooling0602/dsh-termux-fix
+$ cd dsh-termux-fix
+$ ./scripts/install-dsh.sh            # install dsh, then patch it
+$ dsh web                             # now boots
 ```
 
-> **Order matters.** These patches modify files *inside the installed package*, so `@deepseek-ai/dsh` must already be installed before you run `install.sh`. If dsh is missing, the script stops and tells you to install it. Re-run `./install.sh` after **every** `npm install -g @deepseek-ai/dsh`.
+> **Install with `--ignore-scripts`, not plain `npm install -g`.** A bare `npm install -g @deepseek-ai/dsh` **fails on Termux/Android** — koffi's install script compiles C++ whose `statx()` branch does not build against bionic, exits 1, and npm then rolls back the entire global install, leaving you with no dsh at all. `scripts/install-dsh.sh` installs with `--ignore-scripts` and then runs `./install.sh`, which supplies every native binding the skipped scripts would have produced. Add `--with-tui` to install `@deepseek-harness-tui/dsh-tui` in the same transaction.
 
 ## Why it breaks
 
@@ -95,18 +96,31 @@ The first needs a syscall that Node's public API does not expose, which is why s
 ```bash
 git clone https://github.com/Mooling0602/dsh-termux-fix
 cd dsh-termux-fix
-./install.sh --check    # see what is missing
-./install.sh            # apply everything
+./scripts/install-dsh.sh --with-tui   # install dsh + dsh-tui, then patch
+./install.sh --check                  # see what is missing (all green = done)
 ```
 
-Then restart `dsh`.
+Then restart `dsh`. If dsh is already installed and you only want the patches, `./install.sh` alone is still the right command.
+
+### Installing dsh by hand
+
+`scripts/install-dsh.sh` is a convenience wrapper around exactly this:
+
+```bash
+npm install -g --ignore-scripts @deepseek-ai/dsh    # --ignore-scripts is required
+./install.sh                                        # supply the bindings it skipped
+```
+
+The flag is not an optimisation. With scripts enabled, koffi's `install` hook runs CNoke, which tries to compile `lib/native/base/base.cc`, hits `cannot initialize a member subobject of type '__u32' ... with an lvalue of type 'const char *'` at the `statx()` call (line 2967), and exits 1. npm treats one failed lifecycle script as a failed install and undoes the whole tree, so dsh is left uninstalled. Skipping the scripts and patching afterwards is the same end state, without the doomed compile.
+
+The same applies to installing a **second** global package that pulls dsh in as a dependency, e.g. `dsh-tui`: pass `--ignore-scripts` there too, or the koffi hook fires again and rolls that install back as well. Re-run `./install.sh` afterwards, because the new install wiped the existing patches.
 
 ## Usage
 
 ```
 ./install.sh              Apply every step. Idempotent — safe to re-run.
 ./install.sh --check      Report status of each patch. Changes nothing.
-./install.sh --step 0     Run one step only (0-6).
+./install.sh --step 0     Run one step only (0-7).
 ./install.sh --list       List steps.
 ./install.sh --help       Full options.
 ```
@@ -145,7 +159,7 @@ dsh-termux-fix — status
 
 ## After every upgrade
 
-> **The patches live inside the installed package and are wiped by any reinstall or upgrade.** Re-run `./install.sh` after every `npm install -g @deepseek-ai/dsh`.
+> **The patches live inside the installed package and are wiped by any reinstall or upgrade.** Upgrading means re-running `./scripts/install-dsh.sh` (or, if dsh is already installed, `./install.sh` after your own `npm install -g --ignore-scripts @deepseek-ai/dsh`). Note that a reinstall the normal way — without `--ignore-scripts` — does not just wipe the patches, it fails outright and rolls dsh back.
 
 Only `koffi` needs a real recompile; the other two are N-API v9 and survive Node upgrades. Step 2 skips work when its binding is already present, so a plain re-run is cheap.
 
@@ -154,7 +168,7 @@ Only `koffi` needs a real recompile; the other two are N-API v9 and survive Node
 ## Requirements
 
 - Termux on Android, **aarch64** (arm64). The prebuilt `system.node` is aarch64-only; other architectures must recompile from `system.cc`. Step 6 likewise depends on upstream's `android-aarch64` release.
-- **`@deepseek-ai/dsh` installed first.** Run `npm install -g @deepseek-ai/dsh` before `./install.sh`; these patches edit the installed package and have nothing to edit otherwise. Check with `npm root -g`.
+- **`@deepseek-ai/dsh` installed first, without lifecycle scripts.** Run `./scripts/install-dsh.sh` (or `npm install -g --ignore-scripts @deepseek-ai/dsh`) before `./install.sh`; these patches edit the installed package and have nothing to edit otherwise. Plain `npm install -g @deepseek-ai/dsh` aborts on the koffi build and installs nothing — see [Installing dsh by hand](#installing-dsh-by-hand). Check the location with `npm root -g`.
 - Node.js ≥ 20 with headers at `$PREFIX/include/node` (`pkg install nodejs` provides both).
 - `clang`, `cmake`, `make`, `git`, `tar`, `curl`. **Step 0 installs these via `pkg`** and is a no-op when they are present, so you do not normally need to install them by hand. They are still listed here because `--step 1` and later assume them if you skip step 0. `cmake` is only needed if the prebuilt koffi binding cannot be used — see below.
 - Network access for steps 2 and 6 (clone/compile sources, fetch the sherpa release). Both are skipped when their output is already present.
@@ -232,6 +246,14 @@ pkg reinstall cmake     # only if cmake itself is damaged and libc++ is current
 
 **`upstream layout changed`** — a step script found its anchor a number of times other than exactly 1. Upstream moved the code. Do not force it; open an issue with the dsh version.
 
+### Known gaps
+
+Two failures are **not** fixed by anything here, and neither is caused by installing with `--ignore-scripts`. Both are missing-platform-package problems with no patch to apply: the packages resolve a per-platform binary that npm can only supply through `optionalDependencies`, and no Android entry exists for either on the registry.
+
+**`Could not load the "sharp" module using the android-arm64 runtime`** — image attachments. `sharp@0.35.x` ships no JavaScript fallback and selects a `@img/sharp-<platform>-<arch>` package at runtime; `sharp` declares no `os: ["android"]` in any of them, so npm skips them all and only `@img/colour` is installed. Reached lazily from `@deepseek-ai/dsh-attachment-local`, so the plugin loads and text-only use is unaffected — only the first image normalisation throws. There is no fix in this repository: a working image pipeline would need `sharp` or libvips compiled against bionic, which upstream does not publish.
+
+**`Could not find @vscode/ripgrep-android-arm64`** — the `glob` and `grep` tools fail with `SEARCH_FAILED ... ripgrep launch failed`. `dsh-tool-fs-search` resolves ripgrep through `@vscode/ripgrep`, which requires `@vscode/ripgrep-<platform>-<arch>/bin/rg`; the registry publishes twelve such packages and none targets Android. Termux has its own `/data/data/com.termux/files/usr/bin/rg`, but dsh has no system-`rg` fallback, and the resolution is a `require.resolve()` inside the package, so nothing in the default profile can redirect it. Lazy as well: it surfaces at the first search, not at boot. Tracked upstream, not patched here.
+
 ## How it works
 
 Each step is a separate script in [`scripts/`](scripts/) and can run alone. The installer only orchestrates them and reports.
@@ -243,6 +265,7 @@ Patches are applied by **exact-text anchors**, not regex. A step refuses to run 
 ```
 install.sh                  Entry point: --check / --step / --list / --help
 scripts/
+  install-dsh.sh            Install dsh (--ignore-scripts), then patch it
   lib.sh                    Shared helpers, module discovery
   step0-deps.sh             Install the toolchain via pkg
   step1-koffi.sh            statx -> fstatat

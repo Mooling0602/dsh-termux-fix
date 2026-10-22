@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.10.0] — 2026-10-22
+
+### Added
+
+- **`scripts/install-dsh.sh`: install dsh and patch it in one command.** `./scripts/install-dsh.sh` runs `npm install -g --ignore-scripts @deepseek-ai/dsh` and then `./install.sh` against the tree it just wrote; `--with-tui` adds `@deepseek-harness-tui/dsh-tui` to the same transaction, `--no-patch` stops after the install, and any remaining argument is passed to npm as a package spec so a version can be pinned (`@deepseek-ai/dsh@0.2.1-rc.2`). It resolves the target through `npm root -g`, so `npm_config_prefix` is honoured, and it hands `DSH_MODULES` to `install.sh` so a non-default prefix patches the tree it just installed instead of the default one.
+
+### Fixed
+
+- **A plain `npm install -g @deepseek-ai/dsh` does not work on Termux/Android, and both READMEs said to run exactly that.** koffi's `install` lifecycle hook runs CNoke, which compiles `lib/native/base/base.cc`; its `statx()` branch cannot compile against bionic (`cannot initialize a member subobject of type '__u32' ... with an lvalue of type 'const char *'`, base.cc:2967), so the hook exits 1 and npm rolls the entire global install back — dsh ends up not installed at all. Nothing the hook would have produced is usable on Android anyway: koffi publishes no `android-arm64` prebuilt, so the hook can only attempt that same doomed compile. `--ignore-scripts` is therefore required, and every binding the skipped hooks would have produced is supplied by steps 1, 2, 3, 6 and 7. Documented in both READMEs (new "Installing dsh by hand" section) and in `--help`.
+- **Installing a second global package that pulls dsh in — `dsh-tui` is one — hits the same hook.** Both READMEs now say to pass `--ignore-scripts` there too, and to re-run `./install.sh` afterwards, because that install wipes the existing patches.
+- **Documented two pre-existing gaps that nothing here fixes, and that `--ignore-scripts` does not cause.** Both are missing-platform-package failures: `sharp` (image attachments, lazily reached from `dsh-attachment-local`) and `@vscode/ripgrep` (`glob`/`grep`, via `dsh-tool-fs-search`) resolve per-platform binaries that npm can only supply through `optionalDependencies`, and the registry publishes no Android entry for either — twelve `@vscode/ripgrep-*` packages, none for Android; `sharp`'s `@img/*` packages declare no `os: ["android"]`, so npm filters them all out. Neither package declares a lifecycle script, so neither is affected by skipping them either way. Both fail lazily at first use, not at boot; a curated `packages`/`os` entry or a locally compiled binding is the only real fix, and both need work upstream. Recorded in the troubleshooting section of both READMEs instead of being silently left to look like this project's bug.
+- **`--help` still advertised `--step N (0-6)`** while `run_step()` accepted 0-7 (step 7 landed in 1.9.0 and the STEPS list was extended but the option line was not). Both READMEs repeated the stale range in their usage blocks.
+
 ## [1.9.1] — 2026-10-21
 
 ### Fixed
