@@ -6,7 +6,7 @@
 
 ---
 
-`dsh` 只发布了 linux、macOS 和 Windows 版本。在 Android 上它能启动，然后在不同的层各摔一跤。这个仓库把它们收集成一个可重复运行、幂等的安装脚本。
+`dsh` 只发布了 Linux、macOS 和 Windows 版本。在 Android 上它能启动，然后在不同的层各摔一跤。这个仓库把它们收集成一个可重复运行、幂等的安装脚本。
 
 > [!IMPORTANT]
 > 本项目只保证与**最新版** `@deepseek-ai/dsh` 的兼容性，不保证与旧版 dsh 兼容。补丁是按已安装包内部的精确文本锚点打上去的，这些锚点在版本之间会移动。dsh 更新之后，请执行 `git pull` 拉取最新代码以获得对应的补丁，或者等待适配完成。锚点对不上时，相关步骤会以 `upstream layout changed` 退出，而不会打到错误的位置。
@@ -22,7 +22,7 @@ $ dsh web                             # 现在能起来了
 
 ## 为什么跑不起来
 
-Android 与 Linux 足够相似，能骗过所有表面检查；又足够不同，在七个独立的地方失败。这些都不是配置问题，而是 dsh 的假设与 Android 的实际能力对不上。
+Android 与 Linux 足够相似，能骗过所有表面检查；又足够不同，在八个独立的地方失败。这些都不是配置问题，而是 dsh 的假设与 Android 的实际能力对不上。
 
 | # | 组件 | 失效的假设 | 修法 |
 |---|---|---|---|
@@ -33,6 +33,7 @@ Android 与 Linux 足够相似，能骗过所有表面检查；又足够不同�
 | 5 | 验证 | — | 加载每个绑定并实跑 |
 | 6 | 本地语音输入 | 存在 `android-arm64` 的 sherpa-onnx | 用上游官方 Termux 版编译 N-API 封装 |
 | 7 | 持久终端 (pty) | `process.platform` 只会是 linux/darwin/win32；且存在 `android-arm64` 的 node-pty | 让 inspector 走 Linux 分支；提供预编译的 `pty.node` |
+| 8 | `grep` / `glob`、文件写入 | 存在 `android-arm64` 的 ripgrep，且 `link(2)` 可用 | 把 Android ripgrep 包软链到系统 `rg`；新建文件改用 `renameat2` 而非 `link()` |
 
 第 0 步性质不同：它负责装好上面几步要用的工具链（`clang`、`cmake`、`git` 等）。之所以有这一步，是因为缺 `cmake` 过去只会表现为 `koffi build failed`，真正的原因埋在堆栈里——见 issue #1。
 
@@ -46,7 +47,7 @@ Error: Local speech is unavailable for android-arm64
 
 它来自 `dsh-experimental-speech-to-text-sensevoice` 里写死的平台白名单，只列了 darwin/linux/win32。把 `android-arm64` 加进去是**必要但不充分**的——下一个失败点是原生依赖：
 
-`sherpa-onnx-node` 只发 linux、darwin、win32 的预编译产物。其中 `linux-arm64` 那份动态链接的是 **glibc**（`libc.so.6`、`ld-linux-aarch64.so.1`、`libstdc++.so.6`）。Android 用的是 **bionic**，所以那个二进制根本加载不了——这不是路径问题，是 libc 就不一样。
+`sherpa-onnx-node` 只发 Linux、darwin、win32 的预编译产物。其中 `linux-arm64` 那份动态链接的是 **glibc**（`libc.so.6`、`ld-linux-aarch64.so.1`、`libstdc++.so.6`）。Android 用的是 **bionic**，所以那个二进制根本加载不了——这不是路径问题，是 libc 就不一样。
 
 出路在于：上游其实发布了 `android-aarch64-termux-shared` 版本，是针对 bionic 编译的，只是没走 npm 分发。第 6 步下载那个发布包，只编译上面那层薄薄的 N-API 封装，然后和 JS 包放在一起。
 
@@ -130,23 +131,30 @@ npm install -g --ignore-scripts @deepseek-ai/dsh    # --ignore-scripts 是必须
 ```
 dsh-termux-fix — status
 
+  commit        52bf9e9
   dsh version   0.2.1-rc.2
   modules       /data/data/com.termux/files/usr/lib/node_modules/@deepseek-ai/dsh/node_modules
   node          v26.4.0
   platform      Linux aarch64
 
+  0 toolchain                        complete
   1 koffi binding                    loads (koffi 3.1.1)
-  2 require-builtin binding          present (245424 bytes)
-  3 system binding                   present (8216 bytes)
+  2 require-builtin binding          present (245736 bytes)
+  3 system binding                   present (8488 bytes)
   3 flock.js guard                   allows android
   4 session-persistence              patched (3 refs)
-  0 toolchain                        complete
   4 attachment-local                 patched (2 refs)
-  6 sherpa addon                     present (616216 bytes)
+  6 sherpa addon                     present (616680 bytes)
   6 sensevoice platform gate         allows android
   6 addon library preload            patched
   6 model files                      downloaded
+  7 terminal inspector gate          allows android
+  7 pty binding                      present, prebuilt (97768 bytes)
+  8 ripgrep shim                     present -> /data/data/com.termux/files/usr/bin/rg
+  8 fs-local link fallback           patched
 ```
+
+`commit` 那一行是产出这份报告的版本，提 issue 时请一并贴上，见[提交 Issue](#提交-issue)。
 
 ### 环境变量
 
@@ -170,6 +178,7 @@ dsh-termux-fix — status
 - Android 上的 Termux，**aarch64**（arm64）。预编译的 `system.node` 仅支持 aarch64；其他架构需从 `system.cc` 重新编译。第 6 步同样依赖上游的 `android-aarch64` 发布包。
 - **先装好 `@deepseek-ai/dsh`，且不能带生命周期脚本。** 跑 `./install.sh` 之前先跑 `./scripts/install-dsh.sh`（或 `npm install -g --ignore-scripts @deepseek-ai/dsh`）；这些补丁改的是已安装包，没装就无处可改。直接 `npm install -g @deepseek-ai/dsh` 会卡在 koffi 编译上并回滚，什么都不会装——见[手动安装 dsh](#手动安装-dsh)。用 `npm root -g` 确认位置。
 - Node.js ≥ 20，且头文件位于 `$PREFIX/include/node`（`pkg install nodejs` 已包含）。
+- **`ripgrep`**，供 `grep` 与 `glob` 工具使用。第 8 步用一个符号链接把 dsh 指向系统二进制；没有它这一步只会告警，两个工具仍然不可用。装法：`pkg install ripgrep`。
 - `clang`、`cmake`、`make`、`git`、`tar`、`curl`。**第 0 步会用 `pkg` 装好这些**，已装时自动跳过，所以一般不用手动装。之所以还列在这里，是因为如果你跳过第 0 步，第 1 步及之后会假定它们存在。其中 `cmake` 只在预编译的 koffi 绑定不能用时才需要——见下。
 - 第 2、6 步需要网络（克隆源码、下载 sherpa 发布包）；产物已存在时跳过。
 - 语音功能需要在 dsh profile 里启用 voice-input bundle。没启用时 `--check` 会显示 `6 speech package  not installed`。

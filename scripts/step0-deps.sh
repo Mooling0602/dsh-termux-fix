@@ -24,6 +24,7 @@ git:cloning upstream sources (step 2)
 nodejs:the runtime itself, and node_api.h
 tar:unpacking release archives (steps 2, 6)
 curl:downloading sources and releases (steps 2, 6)
+ripgrep:the grep/glob tools, via the step 8 shim
 "
 
 # dpkg only proves the files landed. cmake in particular can be "installed" yet

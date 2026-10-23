@@ -6,7 +6,7 @@
 
 ---
 
-`dsh` is published for linux, macOS and Windows. On Android it starts, then falls over — differently at each layer. This repository collects the patches that make it work, as one re-runnable, idempotent installer.
+`dsh` is published for Linux, macOS and Windows. On Android it starts, then falls over — differently at each layer. This repository collects the patches that make it work, as one re-runnable, idempotent installer.
 
 > [!IMPORTANT]
 > This project only guarantees compatibility with the **latest** release of `@deepseek-ai/dsh`; older versions are not supported. Patches are applied by exact-text anchors inside the installed package, and those anchors move between releases. After dsh is updated, run `git pull` to get the matching patches, or wait until they have been adapted. When an anchor no longer matches, the affected step exits with `upstream layout changed` instead of patching the wrong place.
@@ -22,7 +22,7 @@ $ dsh web                             # now boots
 
 ## Why it breaks
 
-Android is close enough to Linux to pass every superficial check, and different enough to fail at seven separate points. None of them are configuration problems — each is a mismatch between what dsh assumes and what Android provides.
+Android is close enough to Linux to pass every superficial check, and different enough to fail at eight separate points. None of them are configuration problems — each is a mismatch between what dsh assumes and what Android provides.
 
 | # | Component | Assumption that breaks | Fix |
 |---|---|---|---|
@@ -33,6 +33,7 @@ Android is close enough to Linux to pass every superficial check, and different 
 | 5 | verifying the above | — | Load every binding and exercise it |
 | 6 | local speech-to-text | An `android-arm64` sherpa-onnx binary exists | Build the N-API addon against upstream's official Termux release |
 | 7 | persistent terminal (pty) | `process.platform` is only ever linux/darwin/win32, and an `android-arm64` node-pty exists | Route the inspector through its Linux branch; ship a prebuilt `pty.node` |
+| 8 | `grep` / `glob`, file writes | A prebuilt `android-arm64` ripgrep exists, and `link(2)` works | Symlink the Android ripgrep package at the system `rg`; publish new files with `renameat2` instead of `link()` |
 
 Step 0 is different in kind: it installs the toolchain (`clang`, `cmake`, `git`, …) those steps need. It exists because a missing `cmake` used to surface as `koffi build failed` with the real cause buried in a stack trace — see issue #1.
 
@@ -46,7 +47,7 @@ Error: Local speech is unavailable for android-arm64
 
 That message comes from a hardcoded platform allowlist in `dsh-experimental-speech-to-text-sensevoice`, listing darwin/linux/win32 only. Adding `android-arm64` to that list is necessary but **not sufficient** — the next failure is the native dependency:
 
-`sherpa-onnx-node` ships prebuilt binaries for linux, darwin and win32. Its `linux-arm64` build is dynamically linked against **glibc** (`libc.so.6`, `ld-linux-aarch64.so.1`, `libstdc++.so.6`). Android uses **bionic**, so that binary cannot load at all — not a path problem, a different libc.
+`sherpa-onnx-node` ships prebuilt binaries for Linux, darwin and win32. Its `linux-arm64` build is dynamically linked against **glibc** (`libc.so.6`, `ld-linux-aarch64.so.1`, `libstdc++.so.6`). Android uses **bionic**, so that binary cannot load at all — not a path problem, a different libc.
 
 The way out: upstream publishes an `android-aarch64-termux-shared` release built against bionic, it just is not distributed through npm. Step 6 downloads that release, compiles only the thin N-API wrapper against it, and drops both next to the JS package.
 
@@ -130,23 +131,30 @@ The same applies to installing a **second** global package that pulls dsh in as 
 ```
 dsh-termux-fix — status
 
+  commit        52bf9e9
   dsh version   0.2.1-rc.2
   modules       /data/data/com.termux/files/usr/lib/node_modules/@deepseek-ai/dsh/node_modules
   node          v26.4.0
   platform      Linux aarch64
 
+  0 toolchain                        complete
   1 koffi binding                    loads (koffi 3.1.1)
-  2 require-builtin binding          present (245424 bytes)
-  3 system binding                   present (8216 bytes)
+  2 require-builtin binding          present (245736 bytes)
+  3 system binding                   present (8488 bytes)
   3 flock.js guard                   allows android
   4 session-persistence              patched (3 refs)
-  0 toolchain                        complete
   4 attachment-local                 patched (2 refs)
-  6 sherpa addon                     present (616216 bytes)
+  6 sherpa addon                     present (616680 bytes)
   6 sensevoice platform gate         allows android
   6 addon library preload            patched
   6 model files                      downloaded
+  7 terminal inspector gate          allows android
+  7 pty binding                      present, prebuilt (97768 bytes)
+  8 ripgrep shim                     present -> /data/data/com.termux/files/usr/bin/rg
+  8 fs-local link fallback           patched
 ```
+
+The `commit` line is the revision that produced the report — include it when filing an issue, see [Reporting an issue](#reporting-an-issue).
 
 ### Environment variables
 
@@ -170,6 +178,7 @@ Only `koffi` needs a real recompile; the other two are N-API v9 and survive Node
 - Termux on Android, **aarch64** (arm64). The prebuilt `system.node` is aarch64-only; other architectures must recompile from `system.cc`. Step 6 likewise depends on upstream's `android-aarch64` release.
 - **`@deepseek-ai/dsh` installed first, without lifecycle scripts.** Run `./scripts/install-dsh.sh` (or `npm install -g --ignore-scripts @deepseek-ai/dsh`) before `./install.sh`; these patches edit the installed package and have nothing to edit otherwise. Plain `npm install -g @deepseek-ai/dsh` aborts on the koffi build and installs nothing — see [Installing dsh by hand](#installing-dsh-by-hand). Check the location with `npm root -g`.
 - Node.js ≥ 20 with headers at `$PREFIX/include/node` (`pkg install nodejs` provides both).
+- **`ripgrep`**, for the `grep` and `glob` tools. Step 8 points dsh at the system binary with a symlink; without it the step warns and the two tools stay broken. `pkg install ripgrep`.
 - `clang`, `cmake`, `make`, `git`, `tar`, `curl`. **Step 0 installs these via `pkg`** and is a no-op when they are present, so you do not normally need to install them by hand. They are still listed here because `--step 1` and later assume them if you skip step 0. `cmake` is only needed if the prebuilt koffi binding cannot be used — see below.
 - Network access for steps 2 and 6 (clone/compile sources, fetch the sherpa release). Both are skipped when their output is already present.
 - For speech, the voice-input bundle enabled in your dsh profile. `--check` reports `6 speech package  not installed` if it is missing.

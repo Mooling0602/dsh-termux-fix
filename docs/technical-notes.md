@@ -148,7 +148,7 @@ koffi declares `scripts.install = "node ./cnoke.cjs -P . -D src/koffi --prebuild
 3. On false, print `Failed to load prebuilt binary, rebuilding from source`, then `checkCMake()`, `configure()` and `cmake --build`.
 4. Any failure in the build rethrows as `Failed to run build step`, and the top-level handler calls `process.exit(1)`.
 
-`checkPrebuild()` can only return true when a binding is already present. On a fresh install there is none, because koffi publishes no `android-arm64` prebuilt (its `optionalDependencies` have entries for linux, darwin, win32, freebsd, openbsd and loongarch, but not android). So the hook always falls through to step 3, always attempts the compile, and always fails at `base.cc:2967` — the exact line the patch fixes, in a file the patch cannot reach yet, because nothing is installed for it to patch.
+`checkPrebuild()` can only return true when a binding is already present. On a fresh install there is none, because koffi publishes no `android-arm64` prebuilt (its `optionalDependencies` have entries for Linux, darwin, win32, freebsd, openbsd and loongarch, but not android). So the hook always falls through to step 3, always attempts the compile, and always fails at `base.cc:2967` — the exact line the patch fixes, in a file the patch cannot reach yet, because nothing is installed for it to patch.
 
 npm's contribution is to make that fatal rather than cosmetic: a non-zero `install` script fails the package install, and a failed package in a global install rolls back the whole transaction. The observed end state is therefore *no dsh at all*, not a dsh with a broken koffi.
 

@@ -107,7 +107,7 @@ check_status() {
     # `cmake --version` exits 0, and reports the mismatch as
     # "CMake does not seem to be available".
     local missing='' broken=''
-    for pkg in clang cmake make git nodejs tar curl; do
+    for pkg in clang cmake make git nodejs tar curl ripgrep; do
         dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null \
             | grep -q "install ok installed" || missing="$missing $pkg"
     done
