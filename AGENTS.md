@@ -20,3 +20,4 @@
 ## Versioning
 
 - The `v<version>` form is only for release-note titles and references in documentation. Everywhere else — git tags in particular — use plain SemVer, e.g. `1.11.0`.
+- No release without a substantive code change. Documentation-only commits stay unreleased.
