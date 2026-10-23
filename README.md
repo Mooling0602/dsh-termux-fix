@@ -11,14 +11,43 @@
 > [!IMPORTANT]
 > This project only guarantees compatibility with the **latest** release of `@deepseek-ai/dsh`; older versions are not supported. Patches are applied by exact-text anchors inside the installed package, and those anchors move between releases. After dsh is updated, run `git pull` to get the matching patches, or wait until they have been adapted. When an anchor no longer matches, the affected step exits with `upstream layout changed` instead of patching the wrong place.
 
-```
-$ git clone https://github.com/Mooling0602/dsh-termux-fix
-$ cd dsh-termux-fix
-$ ./scripts/install-dsh.sh            # install dsh, then patch it
-$ dsh web                             # now boots
+## Quick start
+
+```bash
+git clone https://github.com/Mooling0602/dsh-termux-fix
+cd dsh-termux-fix
+./scripts/install-dsh.sh --with-tui   # install dsh + dsh-tui, then patch
+./install.sh --check                  # see what is missing (all green = done)
 ```
 
+Then restart `dsh`. If dsh is already installed and you only want the patches, `./install.sh` alone is still the right command.
+
 > **Install with `--ignore-scripts`, not plain `npm install -g`.** A bare `npm install -g @deepseek-ai/dsh` **fails on Termux/Android** — koffi's install script compiles C++ whose `statx()` branch does not build against bionic, exits 1, and npm then rolls back the entire global install, leaving you with no dsh at all. `scripts/install-dsh.sh` installs with `--ignore-scripts` and then runs `./install.sh`, which supplies every native binding the skipped scripts would have produced. Add `--with-tui` to install `@deepseek-harness-tui/dsh-tui` in the same transaction.
+
+### Installing dsh by hand
+
+`scripts/install-dsh.sh` is a convenience wrapper around exactly this:
+
+```bash
+npm install -g --ignore-scripts @deepseek-ai/dsh    # --ignore-scripts is required
+./install.sh                                        # supply the bindings it skipped
+```
+
+The flag is not an optimisation. With scripts enabled, koffi's `install` hook runs CNoke, which tries to compile `lib/native/base/base.cc`, hits `cannot initialize a member subobject of type '__u32' ... with an lvalue of type 'const char *'` at the `statx()` call (line 2967), and exits 1. npm treats one failed lifecycle script as a failed install and undoes the whole tree, so dsh is left uninstalled. Skipping the scripts and patching afterwards is the same end state, without the doomed compile.
+
+The same applies to installing a **second** global package that pulls dsh in as a dependency, e.g. `dsh-tui`: pass `--ignore-scripts` there too, or the koffi hook fires again and rolls that install back as well. Re-run `./install.sh` afterwards, because the new install wiped the existing patches.
+
+### Updating to a freshly published release
+
+npm resolves a bare package name through the `latest` dist-tag, and a new dsh release often sits on `next` for a while before `latest` moves over. `./scripts/install-dsh.sh` with no arguments installs whatever `latest` points at, so right after a release it can reinstall the version you already have — it reports `replacing dsh <version>` with the same version you had.
+
+Name the tag, or pin the version, when you mean a specific release:
+
+```bash
+./scripts/install-dsh.sh @deepseek-ai/dsh@next
+./scripts/install-dsh.sh @deepseek-ai/dsh@<version>   # pin exactly
+npm view @deepseek-ai/dsh dist-tags                   # see where each tag points
+```
 
 ## Why it breaks
 
@@ -92,30 +121,6 @@ So the replacement cannot be a plain `rename()` — that would silently clobber 
 
 The first needs a syscall that Node's public API does not expose, which is why step 3 exists at all: `src/node-addon-system/system.cc` is a small N-API binding that provides both `flock` (dsh needs it) and `renameNoReplace` (our patch needs it).
 
-## Quick start
-
-```bash
-git clone https://github.com/Mooling0602/dsh-termux-fix
-cd dsh-termux-fix
-./scripts/install-dsh.sh --with-tui   # install dsh + dsh-tui, then patch
-./install.sh --check                  # see what is missing (all green = done)
-```
-
-Then restart `dsh`. If dsh is already installed and you only want the patches, `./install.sh` alone is still the right command.
-
-### Installing dsh by hand
-
-`scripts/install-dsh.sh` is a convenience wrapper around exactly this:
-
-```bash
-npm install -g --ignore-scripts @deepseek-ai/dsh    # --ignore-scripts is required
-./install.sh                                        # supply the bindings it skipped
-```
-
-The flag is not an optimisation. With scripts enabled, koffi's `install` hook runs CNoke, which tries to compile `lib/native/base/base.cc`, hits `cannot initialize a member subobject of type '__u32' ... with an lvalue of type 'const char *'` at the `statx()` call (line 2967), and exits 1. npm treats one failed lifecycle script as a failed install and undoes the whole tree, so dsh is left uninstalled. Skipping the scripts and patching afterwards is the same end state, without the doomed compile.
-
-The same applies to installing a **second** global package that pulls dsh in as a dependency, e.g. `dsh-tui`: pass `--ignore-scripts` there too, or the koffi hook fires again and rolls that install back as well. Re-run `./install.sh` afterwards, because the new install wiped the existing patches.
-
 ## Usage
 
 ```
@@ -132,7 +137,7 @@ The same applies to installing a **second** global package that pulls dsh in as 
 dsh-termux-fix — status
 
   commit        52bf9e9
-  dsh version   0.2.1-rc.2
+  dsh version   0.2.1-rc.3
   modules       /data/data/com.termux/files/usr/lib/node_modules/@deepseek-ai/dsh/node_modules
   node          v26.4.0
   platform      Linux aarch64
@@ -184,6 +189,8 @@ When dsh is not installed at all, `--check` reports that instead of failing, so 
 Only `koffi` needs a real recompile; the other two are N-API v9 and survive Node upgrades. Step 2 skips work when its binding is already present, so a plain re-run is cheap.
 
 **Step 6 is the fragile one.** It writes into `sherpa-onnx-node`, which npm installs as a transitive dependency of the voice-input bundle. A reinstall wipes the compiled `.node` and the `.so` copies. Worse, if you use pnpm (dsh profiles do), `pnpm install` rebuilds the store from scratch and will transport you back to `Local speech is unavailable for android-arm64`. Re-run `./install.sh --step 6` after any dependency change. The build artefacts stay in `$DSH_FIX_WORKDIR/sherpa-onnx/`, so the rebuild is a link step, not a download — unless you cleared that directory.
+
+If an update leaves a step unhappy, you get `upstream layout changed` instead of a half-patched install — the patch refused to land in the wrong place. That is the signal to report it so the anchors can be refreshed: say which dsh version you moved to and which step refused, and follow [Reporting an issue](#reporting-an-issue).
 
 ## Requirements
 
@@ -326,7 +333,7 @@ docs/
 
 ## Status
 
-Verified on Termux / aarch64 / Node v26.4.0 / clang 21.1.8 with dsh 0.2.1-rc.2, koffi 3.1.1 and sherpa-onnx 1.13.8.
+Verified on Termux / aarch64 / Node v26.4.0 / clang 21.1.8 with dsh 0.2.1-rc.3, koffi 3.1.1 and sherpa-onnx 1.13.8.
 
 **This is not an officially supported path.** Everything here modifies files inside an installed npm package. Upgrades undo it, upstream test suites do not cover it, and dsh internals may change without notice.
 

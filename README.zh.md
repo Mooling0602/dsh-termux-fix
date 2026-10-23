@@ -11,14 +11,43 @@
 > [!IMPORTANT]
 > 本项目只保证与**最新版** `@deepseek-ai/dsh` 的兼容性，不保证与旧版 dsh 兼容。补丁是按已安装包内部的精确文本锚点打上去的，这些锚点在版本之间会移动。dsh 更新之后，请执行 `git pull` 拉取最新代码以获得对应的补丁，或者等待适配完成。锚点对不上时，相关步骤会以 `upstream layout changed` 退出，而不会打到错误的位置。
 
-```
-$ git clone https://github.com/Mooling0602/dsh-termux-fix
-$ cd dsh-termux-fix
-$ ./scripts/install-dsh.sh            # 装 dsh，然后打补丁
-$ dsh web                             # 现在能起来了
+## 快速开始
+
+```bash
+git clone https://github.com/Mooling0602/dsh-termux-fix
+cd dsh-termux-fix
+./scripts/install-dsh.sh --with-tui   # 装 dsh + dsh-tui，然后打补丁
+./install.sh --check                  # 看还缺什么（全绿就装完了）
 ```
 
+然后重启 `dsh`。如果 dsh 已经装好、只想打补丁，单独跑 `./install.sh` 仍然是对的。
+
 > **要用 `--ignore-scripts` 装，不能直接 `npm install -g`。** 直接跑 `npm install -g @deepseek-ai/dsh` 在 Termux/Android 上**会失败**：koffi 的 install 脚本要编译 C++，其中的 `statx()` 分支在 bionic 上编不过，脚本以 1 退出，npm 随后回滚整个全局安装，结果一个 dsh 都没留下。`scripts/install-dsh.sh` 用 `--ignore-scripts` 安装，然后跑 `./install.sh`，把跳过的脚本本该产出的原生绑定全部补上。加 `--with-tui` 可以在同一次安装里带上 `@deepseek-harness-tui/dsh-tui`。
+
+### 手动安装 dsh
+
+`scripts/install-dsh.sh` 只是把下面两步包了一下：
+
+```bash
+npm install -g --ignore-scripts @deepseek-ai/dsh    # --ignore-scripts 是必须的
+./install.sh                                        # 补上被跳过的绑定
+```
+
+这个 flag 不是图快。开着脚本时，koffi 的 `install` 钩子会跑 CNoke，尝试编译 `lib/native/base/base.cc`，在 `statx()` 调用处（第 2967 行）报 `cannot initialize a member subobject of type '__u32' ... with an lvalue of type 'const char *'` 并以 1 退出。npm 把任何一个生命周期脚本失败都当成整个安装失败，回滚整棵树，于是 dsh 根本没装上。跳过脚本、之后再打补丁，得到的最终状态一样，只是不做那次注定失败的编译。
+
+**装第二个会把 dsh 拉成依赖的全局包**（比如 `dsh-tui`）时同理：那里也要带 `--ignore-scripts`，否则 koffi 的钩子会再触发一次，把那次安装一并回滚。装完要重跑 `./install.sh`，因为新安装把已有补丁抹掉了。
+
+### 更新到刚发布的新版本
+
+npm 用 `latest` 这个 dist-tag 解析裸包名，而 dsh 的新版本发布后往往先在 `next` 上待一阵，`latest` 才移过去。所以不带参数的 `./scripts/install-dsh.sh` 装的是 `latest` 指向的版本——刚发版时它可能把**你已经装的那个版本**又装了一遍，输出里是 `replacing dsh <版本>` 而版本号没变。
+
+要装指定的发布，就显式写 tag 或钉版本：
+
+```bash
+./scripts/install-dsh.sh @deepseek-ai/dsh@next
+./scripts/install-dsh.sh @deepseek-ai/dsh@<version>   # 精确钉版本
+npm view @deepseek-ai/dsh dist-tags                   # 看每个 tag 指向哪个版本
+```
 
 ## 为什么跑不起来
 
@@ -92,30 +121,6 @@ dsh 在三处用 `link()`，而且三处都在做同一件特定的事：**原�
 
 前者需要 Node 公开 API 没有暴露的系统调用，这正是第 3 步存在的原因：`src/node-addon-system/system.cc` 是一个小型 N-API 绑定，同时提供 `flock`（dsh 需要）和 `renameNoReplace`（我们的补丁需要）。
 
-## 快速开始
-
-```bash
-git clone https://github.com/Mooling0602/dsh-termux-fix
-cd dsh-termux-fix
-./scripts/install-dsh.sh --with-tui   # 装 dsh + dsh-tui，然后打补丁
-./install.sh --check                  # 看还缺什么（全绿就装完了）
-```
-
-然后重启 `dsh`。如果 dsh 已经装好、只想打补丁，单独跑 `./install.sh` 仍然是对的。
-
-### 手动安装 dsh
-
-`scripts/install-dsh.sh` 只是把下面两步包了一下：
-
-```bash
-npm install -g --ignore-scripts @deepseek-ai/dsh    # --ignore-scripts 是必须的
-./install.sh                                        # 补上被跳过的绑定
-```
-
-这个 flag 不是图快。开着脚本时，koffi 的 `install` 钩子会跑 CNoke，尝试编译 `lib/native/base/base.cc`，在 `statx()` 调用处（第 2967 行）报 `cannot initialize a member subobject of type '__u32' ... with an lvalue of type 'const char *'` 并以 1 退出。npm 把任何一个生命周期脚本失败都当成整个安装失败，回滚整棵树，于是 dsh 根本没装上。跳过脚本、之后再打补丁，得到的最终状态一样，只是不做那次注定失败的编译。
-
-**装第二个会把 dsh 拉成依赖的全局包**（比如 `dsh-tui`）时同理：那里也要带 `--ignore-scripts`，否则 koffi 的钩子会再触发一次，把那次安装一并回滚。装完要重跑 `./install.sh`，因为新安装把已有补丁抹掉了。
-
 ## 用法
 
 ```
@@ -132,7 +137,7 @@ npm install -g --ignore-scripts @deepseek-ai/dsh    # --ignore-scripts 是必须
 dsh-termux-fix — status
 
   commit        52bf9e9
-  dsh version   0.2.1-rc.2
+  dsh version   0.2.1-rc.3
   modules       /data/data/com.termux/files/usr/lib/node_modules/@deepseek-ai/dsh/node_modules
   node          v26.4.0
   platform      Linux aarch64
@@ -184,6 +189,8 @@ dsh 完全没装时，`--check` 不会报错退出，而是如实报告，输出
 只有 `koffi` 需要真正重新编译；另外两个走 N-API v9，能跨 Node 版本存活。第 2 步在绑定已存在时会直接跳过，所以重跑成本很低。
 
 **第 6 步是最脆的一个。** 它往 `sherpa-onnx-node` 里写文件，而这个包是 npm 作为 voice-input bundle 的传递依赖装进来的。重装会抹掉编译好的 `.node` 和那几个 `.so`。更麻烦的是 dsh profile 用的是 pnpm，`pnpm install` 会重建整个 store，直接把你送回 `Local speech is unavailable for android-arm64`。任何依赖变动之后都重跑 `./install.sh --step 6`。构建产物留在 `$DSH_FIX_WORKDIR/sherpa-onnx/`，所以重建只是链接一步，不用重新下载——除非你把那个目录清了。
+
+如果更新后有某一步没打上，你会看到 `upstream layout changed`，而不是一个只打了一半的安装——补丁拒绝落到错误的位置。这正是该反馈的信号：说明你升到了哪个 dsh 版本、是哪一步拒绝的，按[提交 Issue](#提交-issue)的说明反馈。
 
 ## 要求
 
@@ -326,7 +333,7 @@ docs/
 
 ## 状态
 
-已在 Termux / aarch64 / Node v26.4.0 / clang 21.1.8，dsh 0.2.1-rc.2、koffi 3.1.1、sherpa-onnx 1.13.8 上验证。
+已在 Termux / aarch64 / Node v26.4.0 / clang 21.1.8，dsh 0.2.1-rc.3、koffi 3.1.1、sherpa-onnx 1.13.8 上验证。
 
 **这不是官方支持路径。** 这里的一切都在修改已安装 npm 包内部的文件。升级即失效，上游测试不覆盖，dsh 内部实现也可能随时改变。
 
