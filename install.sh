@@ -30,7 +30,7 @@ USAGE
 
 OPTIONS
   --check          Report the status of every patch without changing anything.
-  --step N         Run only step N (0-7).
+  --step N         Run only step N (0-8).
   --list           List the steps.
   -h, --help       Show this help.
 
@@ -58,6 +58,7 @@ STEPS
   5  verify                     load every binding and exercise it
   6  speech                     local SenseVoice; no android prebuilt
   7  terminal                   android gate + no android-arm64 pty prebuild
+  8  platform-gaps              ripgrep shim + fs-local link() fallback
 
 NOTE
   These patches change files inside the installed dsh package. Every upgrade
@@ -76,6 +77,7 @@ list_steps() {
 5  verify                     load all bindings, check the EEXIST contract
 6  speech                     local speech-to-text via sherpa-onnx
 7  terminal                   persistent terminal: android gate + pty binding
+8  platform-gaps              ripgrep android shim + fs-local link() fallback
 TXT
 }
 
@@ -249,6 +251,25 @@ check_status() {
     else
         status "7 pty binding" "MISSING"
     fi
+
+    # 8 platform gaps — both are lazily reached, so a green run here says the
+    # first `write`, `glob` or `grep` will work rather than fail at use.
+    local rgs=$dmod/@vscode/ripgrep-android-arm64/bin/rg
+    if [ -e "$rgs" ]; then
+        status "8 ripgrep shim" "present -> $(readlink -f "$rgs" 2>/dev/null || echo '?')"
+    else
+        status "8 ripgrep shim" "MISSING (glob/grep fail)"
+    fi
+    local fsl=$dmod/@deepseek-ai/dsh-fs-local/lib/index.js
+    if [ -f "$fsl" ]; then
+        if grep -qF 'dsh-termux-fix: fs-local link helper' "$fsl"; then
+            status "8 fs-local link fallback" "patched"
+        else
+            status "8 fs-local link fallback" "NOT patched (write cannot create files)"
+        fi
+    else
+        status "8 fs-local link fallback" "package missing"
+    fi
     printf '\n'
     info "run ./install.sh to apply, or ./install.sh --step N for one step"
 }
@@ -284,7 +305,8 @@ run_step() {
         5) bash "$HERE/scripts/step5-verify.sh" ;;
         6) bash "$HERE/scripts/step6-speech.sh" ;;
         7) bash "$HERE/scripts/step7-terminal.sh" ;;
-        *) die "no such step: $n (valid: 0-7)" ;;
+        8) bash "$HERE/scripts/step8-platform-gaps.sh" ;;
+        *) die "no such step: $n (valid: 0-8)" ;;
     esac
 }
 
@@ -329,7 +351,8 @@ main() {
     run_step 4; printf '\n'
     run_step 5; printf '\n'
     run_step 6; printf '\n'
-    run_step 7
+    run_step 7; printf '\n'
+    run_step 8
 
     printf '\n'
     ok "done — restart dsh"

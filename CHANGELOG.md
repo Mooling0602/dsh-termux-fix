@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.11.0] — 2026-10-23
+
+### Added
+
+- **Step 8 (`scripts/step8-platform-gaps.sh` + `patch/patch-platform-gaps.mjs`): the two remaining "missing platform package" gaps are now fixed instead of merely documented.** Both had the same shape as the `sharp` gap — a dependency resolves a per-platform binary through `require.resolve()` and the registry publishes no Android entry — but unlike `sharp` both have a working substitute available locally, and both failed lazily at the first tool call, so they read like this project's bug.
+- **`@vscode/ripgrep-android-arm64` shim.** `dsh-tool-fs-search` resolves ripgrep out of `@vscode/ripgrep`, which requires `<platform package>/bin/rg`; the twelve published platform packages include no Android one, so `glob` and `grep` died with `SEARCH_FAILED ... ripgrep launch failed`. Step 8 writes `bin/rg` as a **symlink** onto the `rg` Termux already ships (`$PREFIX/bin/rg`, else `/data/data/com.termux/files/usr/bin/rg`), which is all `require.resolve()` needs — and being a symlink means `pkg upgrade ripgrep` upgrades what dsh runs, instead of pinning a stale copy. The patcher then re-resolves through `@vscode/ripgrep`'s own entry point and runs `rg --version`, so a shim that exists but does not execute fails the step rather than the first search.
+- **`dsh-fs-local` `link()` fallback.** `writeFileAtomic` publishes every write through a private staging file in the destination directory, and the *new file* half of that is `link(2)`. Android SELinux denies hard links outright, so `write` failed with `EACCES ... link '....tmpdir/xxx.tmp' -> 'xxx'` for **every file that did not already exist** — the tool could edit a file but not create one. Replacing an existing file uses `rename(2)` and was never affected, which is why the failure looked like a permissions problem on one path. The patch catches `EACCES`/`EPERM` and retries with `renameat2(RENAME_NOREPLACE)` through the `system.node` binding step 3 installs: atomic, `EEXIST` on collision — the same contract `link`-when-absent gave the caller — and it reuses the existing `throwGuardedCreateFailure` path so a real race still reports `FS_NOT_OBSERVED`.
+
+### Fixed
+
+- **`--help` and both READMEs advertised `--step N (0-7)`** while step 8 now exists; `run_step()` accepts 0-8.
+- **Known-gaps sections in both READMEs rewritten.** `sharp` remains the only unfixable gap; the ripgrep and `write` entries moved from "tracked upstream, not patched here" to the fixes above, with the restart requirement called out — both are patched in the installed package, so a running dsh keeps the old code until it restarts.
+
 ## [1.10.0] — 2026-10-22
 
 ### Added

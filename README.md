@@ -120,7 +120,7 @@ The same applies to installing a **second** global package that pulls dsh in as 
 ```
 ./install.sh              Apply every step. Idempotent — safe to re-run.
 ./install.sh --check      Report status of each patch. Changes nothing.
-./install.sh --step 0     Run one step only (0-7).
+./install.sh --step 0     Run one step only (0-8).
 ./install.sh --list       List steps.
 ./install.sh --help       Full options.
 ```
@@ -248,11 +248,17 @@ pkg reinstall cmake     # only if cmake itself is damaged and libc++ is current
 
 ### Known gaps
 
-Two failures are **not** fixed by anything here, and neither is caused by installing with `--ignore-scripts`. Both are missing-platform-package problems with no patch to apply: the packages resolve a per-platform binary that npm can only supply through `optionalDependencies`, and no Android entry exists for either on the registry.
+**`Could not load the "sharp" module using the android-arm64 runtime`** — image attachments, and the one gap left. It is **not** fixed by anything here, and is not caused by installing with `--ignore-scripts`. Like the two gaps step 8 closes, it is a missing-platform-package problem: `sharp` resolves a per-platform binary that npm can only supply through `optionalDependencies`, and no Android entry exists on the registry.
 
-**`Could not load the "sharp" module using the android-arm64 runtime`** — image attachments. `sharp@0.35.x` ships no JavaScript fallback and selects a `@img/sharp-<platform>-<arch>` package at runtime; `sharp` declares no `os: ["android"]` in any of them, so npm skips them all and only `@img/colour` is installed. Reached lazily from `@deepseek-ai/dsh-attachment-local`, so the plugin loads and text-only use is unaffected — only the first image normalisation throws. There is no fix in this repository: a working image pipeline would need `sharp` or libvips compiled against bionic, which upstream does not publish.
+`sharp@0.35.x` ships no JavaScript fallback and selects a `@img/sharp-<platform>-<arch>` package at runtime; `sharp` declares no `os: ["android"]` in any of them, so npm skips them all and only `@img/colour` is installed. Reached lazily from `@deepseek-ai/dsh-attachment-local`, so the plugin loads and text-only use is unaffected — only the first image normalisation throws. There is no fix in this repository: a working image pipeline would need `sharp` or libvips compiled against bionic, which upstream does not publish.
 
-**`Could not find @vscode/ripgrep-android-arm64`** — the `glob` and `grep` tools fail with `SEARCH_FAILED ... ripgrep launch failed`. `dsh-tool-fs-search` resolves ripgrep through `@vscode/ripgrep`, which requires `@vscode/ripgrep-<platform>-<arch>/bin/rg`; the registry publishes twelve such packages and none targets Android. Termux has its own `/data/data/com.termux/files/usr/bin/rg`, but dsh has no system-`rg` fallback, and the resolution is a `require.resolve()` inside the package, so nothing in the default profile can redirect it. Lazy as well: it surfaces at the first search, not at boot. Tracked upstream, not patched here.
+Two gaps of the same shape **are** fixed now, by step 8 (earlier versions of this file listed them as upstream issues left unpatched):
+
+**`Could not find @vscode/ripgrep-android-arm64`** — the `glob` and `grep` tools fail with `SEARCH_FAILED ... ripgrep launch failed`. `dsh-tool-fs-search` resolves ripgrep through `@vscode/ripgrep`, which requires `@vscode/ripgrep-<platform>-<arch>/bin/rg`; the registry publishes twelve such packages and none targets Android. The fix creates `@vscode/ripgrep-android-arm64/bin/rg` as a symlink onto the `rg` Termux already installs: `require.resolve()` only needs the file to exist, and a symlink means `pkg upgrade ripgrep` also upgrades what dsh runs.
+
+**`write` cannot create a file** — `EACCES ... link '....tmpdir/xxx.tmp' -> 'xxx'`. `dsh-fs-local` publishes every write through a private staging file in the same directory, and the *new file* half goes through `link(2)`; Android SELinux denies hard links outright, so any write whose target does not exist yet fails (replacing an existing file uses `rename(2)` and is unaffected). The fix catches `EACCES`/`EPERM` and retries with `renameat2(RENAME_NOREPLACE)` — atomic, `EEXIST` on collision, the same contract `link`-when-absent provided — using the `system.node` binding step 3 already installs.
+
+Both are lazy: the first write and the first search are what trigger them, never boot. A patched install needs a dsh restart to pick either up.
 
 ## How it works
 
@@ -275,6 +281,7 @@ scripts/
   step5-verify.sh           Load and exercise every binding
   step6-speech.sh           Download upstream Termux release, build the addon
   step7-terminal.sh         Terminal platform gate + install/build the pty binding
+  step8-platform-gaps.sh    ripgrep android shim + fs-local link() fallback
   build-require-builtin.sh  Clang command line replicating upstream build.ts
   build-sherpa-addon.sh     Clang command line for the sherpa N-API wrapper
   build-node-pty.sh         Compile node-pty's pty.cc against bionic
@@ -291,6 +298,7 @@ patch/
   patch-session-persistence.mjs   Anchored patcher for the two JS packages
   patch-sherpa-addon.mjs          Library preload + sensevoice platform gate
   patch-terminal-android.mjs      Inspector platform gate + node-pty load path
+  patch-platform-gaps.mjs         ripgrep android shim + fs-local link() fallback
 docs/
   technical-notes.md        Deeper notes on the N-API contracts
 ```

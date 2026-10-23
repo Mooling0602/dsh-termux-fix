@@ -120,7 +120,7 @@ npm install -g --ignore-scripts @deepseek-ai/dsh    # --ignore-scripts 是必须
 ```
 ./install.sh              应用全部步骤。幂等，可重复运行。
 ./install.sh --check      只报告各补丁状态，不做任何改动。
-./install.sh --step 3     只跑某一步（0-7）。
+./install.sh --step 3     只跑某一步（0-8）。
 ./install.sh --list       列出步骤。
 ./install.sh --help       完整选项。
 ```
@@ -248,11 +248,17 @@ pkg reinstall cmake     # 仅当 libc++ 是新的、cmake 自身损坏时
 
 ### 已知缺口
 
-有两种失败**不是**本项目能修的，也都与用 `--ignore-scripts` 安装无关。它们属于"缺平台包"问题，没有补丁可打：这两个包都在运行时按平台解析一个只能由 npm 通过 `optionalDependencies` 提供的二进制，而 registry 上两者都没有 Android 条目。
+`sharp` 那个失败**不是**本项目能修的，也与用 `--ignore-scripts` 安装无关。它属于"缺平台包"问题，没有补丁可打：这个包在运行时按平台解析一个只能由 npm 通过 `optionalDependencies` 提供的二进制，而 registry 上没有 Android 条目。
 
 **`Could not load the "sharp" module using the android-arm64 runtime`**——图片附件。`sharp@0.35.x` 没有纯 JS 兜底，运行时会选 `@img/sharp-<platform>-<arch>` 包；这些包的 `os` 字段里都没有 `android`，于是 npm 全部跳过，只装上了 `@img/colour`。它由 `@deepseek-ai/dsh-attachment-local` 惰性调用，所以插件本身能加载，纯文本使用不受影响——只有第一次做图片归一化时抛错。本仓库无法修：要让图片链路可用，得把 `sharp` 或 libvips 针对 bionic 编出来，而上游没有这样的发布包。
 
-**`Could not find @vscode/ripgrep-android-arm64`**——`glob` 与 `grep` 工具报 `SEARCH_FAILED ... ripgrep launch failed`。`dsh-tool-fs-search` 通过 `@vscode/ripgrep` 定位 ripgrep，后者要求存在 `@vscode/ripgrep-<platform>-<arch>/bin/rg`；registry 上有十二个这样的包，没有一个面向 Android。Termux 自己有 `/data/data/com.termux/files/usr/bin/rg`，但 dsh 没有"回退到系统 rg"的逻辑，而这个解析是包内部的 `require.resolve()`，默认 profile 里没有任何地方能改写它。同样是惰性的：第一次搜索才报，启动时没事。已记录在上游，此处未打补丁。
+另外两个同形状的缺口**已经修掉了**，由 step 8 负责（早期版本把它们记作"上游问题、此处不修"）：
+
+**`Could not find @vscode/ripgrep-android-arm64`**——`glob` 与 `grep` 工具报 `SEARCH_FAILED ... ripgrep launch failed`。`dsh-tool-fs-search` 通过 `@vscode/ripgrep` 定位 ripgrep，后者要求存在 `@vscode/ripgrep-<platform>-<arch>/bin/rg`；registry 上有十二个这样的包，没有一个面向 Android。修法是把 `@vscode/ripgrep-android-arm64/bin/rg` 建成指向系统 `rg` 的符号链接——`require.resolve()` 只要文件在就行，而链接保证 `pkg upgrade ripgrep` 之后 dsh 用的是同一个二进制。
+
+**`write` 无法创建新文件**——`EACCES ... link '....tmpdir/xxx.tmp' -> 'xxx'`。`dsh-fs-local` 用一个同目录下的私有暂存文件发布写入，新文件走 `link(2)`；Android SELinux 直接拒绝硬链接，所以只要目标文件还不存在，`write` 就必然失败（改已有文件走的是 `rename(2)`，因此不受影响）。修法是捕获 `EACCES`/`EPERM` 后改用 `renameat2(RENAME_NOREPLACE)`：原子、冲突时报 `EEXIST`，与 `link`-when-absent 的契约一致，由 step 3 已经提供的 `system.node` 绑定实现。
+
+这两个都是惰性触发的：第一次写入 / 第一次搜索才暴露，启动时看不出问题。打补丁后需要重启 dsh 才生效。
 
 ## 实现说明
 
@@ -275,6 +281,7 @@ scripts/
   step5-verify.sh           加载并实跑每个绑定
   step6-speech.sh           下载上游 Termux 发布包，编译语音 addon
   step7-terminal.sh         终端平台守卫 + 安装/编译 pty 绑定
+  step8-platform-gaps.sh    ripgrep android 垫片 + fs-local 的 link() 回退
   build-require-builtin.sh  复刻上游 build.ts 的 clang 命令行
   build-sherpa-addon.sh     sherpa N-API 封装的 clang 命令行
   build-node-pty.sh         针对 bionic 编译 node-pty 的 pty.cc
@@ -291,6 +298,7 @@ patch/
   patch-session-persistence.mjs   针对两个 JS 包的锚点补丁器
   patch-sherpa-addon.mjs          库预加载 + sensevoice 平台白名单
   patch-terminal-android.mjs      inspector 平台守卫 + node-pty 加载路径
+  patch-platform-gaps.mjs         ripgrep android 垫片 + fs-local 的 link() 回退
 docs/
   technical-notes.md        N-API 接口契约的深入说明
 ```
