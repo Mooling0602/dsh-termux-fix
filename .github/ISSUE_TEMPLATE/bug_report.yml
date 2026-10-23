@@ -1,12 +1,19 @@
-name: Bug report
-description: Something in install.sh or a step script does not work
+name: Bug report / 问题反馈
+description: Something in install.sh or a step script does not work / install.sh 或某个步骤脚本跑不通
 labels: [bug]
 body:
   - type: markdown
     attributes:
       value: |
-        Before you report, make sure you are on the latest commit — a fix may
-        already be in `main`. Run this, then paste the whole output below:
+        **Before you report / 提交之前**
+
+        Make sure you are on the latest commit — a fix may already be in `main`.
+
+        请先确认已拉取最新提交，问题可能已经修好了。
+
+        Run this, then paste the whole output below:
+
+        执行下面这一条命令，再把完整输出贴到下面的文本框里：
 
         ```bash
         cd dsh-termux-fix && git pull && ./install.sh --check
@@ -16,13 +23,22 @@ body:
         version, Node version and architecture, so nothing has to be collected
         by hand.
 
+        只需要这一条命令。输出头部已经带了 commit、dsh 版本、Node 版本和架构，
+        不用再手动收集。
+
+        Write in English or Chinese, whichever you prefer.
+
+        用英文或中文填写都可以。
+
   - type: textarea
     id: check
     attributes:
-      label: Output of ./install.sh --check
-      description: >
+      label: Output of ./install.sh --check / --check 的输出
+      description: |
         Paste it in full — keep the header lines. They identify the commit and
         versions the report was produced with.
+
+        请完整粘贴，保留头部那几行：它们标明了这份报告对应的 commit 和版本。
       render: text
     validations:
       required: true
@@ -30,8 +46,11 @@ body:
   - type: textarea
     id: what-happened
     attributes:
-      label: What happened
-      description: The command you ran and the complete error output.
+      label: What happened / 具体现象
+      description: |
+        The command you ran and the complete error output.
+
+        你执行的命令，以及完整的报错输出。
       render: shell
     validations:
       required: true
@@ -39,17 +58,20 @@ body:
   - type: textarea
     id: expected
     attributes:
-      label: What you expected
+      label: What you expected / 期望的结果
     validations:
       required: false
 
   - type: textarea
     id: additional-information
     attributes:
-      label: Additional information
-      description: >
+      label: Additional information / 补充信息
+      description: |
         Anything else that might help — workarounds you found, changes you made
         to a step, related issues, or output from a command you already ran.
+
+        任何可能有帮助的信息：你找到的临时办法、对某个步骤所做的改动、
+        相关 issue，或你已经跑过的命令输出。
       render: text
     validations:
       required: false
