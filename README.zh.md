@@ -156,6 +156,18 @@ dsh-termux-fix — status
 
 `commit` 那一行是产出这份报告的版本，提 issue 时请一并贴上，见[提交 Issue](#提交-issue)。
 
+dsh 完全没装时，`--check` 不会报错退出，而是如实报告，输出同样值得粘贴：
+
+```
+  commit        <短 hash>
+  dsh version   not installed
+  modules       <not found>
+  node          v26.4.0
+  platform      Linux aarch64
+
+  dsh                                NOT INSTALLED — no patch can be assessed
+```
+
 ### 环境变量
 
 | 变量 | 默认值 | 作用 |
@@ -323,15 +335,12 @@ docs/
 这些补丁的目标一直在变：**某一步失效，往往是因为 dsh 改了，而不是本仓库坏了。** 提 issue 之前先拉取最新提交，可能已经修好了。
 
 ```bash
-cd dsh-termux-fix
-git pull
-./install.sh --check        # 完整粘贴输出
-git rev-parse --short HEAD  # 这个也要贴
+cd dsh-termux-fix && git pull && ./install.sh --check
 ```
 
-请附上 `git rev-parse --short HEAD` 的短 hash。没有它，问题没法复现：你看到的行为可能来自旧版本，而维护者无从判断你实际跑的是哪份代码。同时附上 dsh 版本、`node -v` 和 `uname -m`。
+只需要这一条命令。请把输出完整贴过来：头部已经带了 commit hash、dsh 版本、Node 版本和架构，不用再手动收集。即使 dsh 没装好，`--check` 也会照常输出——而那正是最值得提 issue 的情况。
 
-Issue 模板会要求填这些。缺少 commit hash 的 issue 可能会被要求拉取后重新提交。
+Issue 模板会要求填这些。缺少头部信息的 issue 可能会被要求拉取后重新提交。
 
 ## 许可证
 

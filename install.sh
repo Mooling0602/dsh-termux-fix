@@ -83,14 +83,31 @@ TXT
 
 check_status() {
     local dmod ver
-    dmod=$(resolve_dsh_modules)
-    ver=$(dsh_version "$dmod")
 
     # The commit identifies exactly which revision produced this output. It is
     # printed so it travels with any pasted report: without it a bug cannot be
     # reproduced, because the behaviour may differ between commits.
     local commit
     commit=$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo 'unknown')
+
+    # --check must never refuse to report. Someone whose install failed is
+    # exactly who needs to file a usable bug report, and dying here would hand
+    # them a single line of stderr with no header to paste. Degrade instead:
+    # print the header with what is known, and mark every step unassessable.
+    if ! dmod=$(resolve_dsh_modules 2>/dev/null); then
+        printf '%sdsh-termux-fix — status%s\n\n' "$C_BOLD" "$C_RESET"
+        printf '  commit        %s\n' "$commit"
+        printf '  dsh version   not installed\n'
+        printf '  modules       %s\n' "${DSH_MODULES:-<not found>}"
+        printf '  node          %s\n' "$(node -v 2>/dev/null || echo 'missing')"
+        printf '  platform      %s %s\n\n' "$(uname -s)" "$(uname -m)"
+        printf '  %-34s %s\n' "dsh" "NOT INSTALLED — no patch can be assessed"
+        printf '\n'
+        info "install dsh first: ./scripts/install-dsh.sh"
+        return 0
+    fi
+
+    ver=$(dsh_version "$dmod")
 
     printf '%sdsh-termux-fix — status%s\n\n' "$C_BOLD" "$C_RESET"
     printf '  commit        %s\n' "$commit"

@@ -6,32 +6,23 @@ body:
     attributes:
       value: |
         Before you report, make sure you are on the latest commit — a fix may
-        already be in `main`.
+        already be in `main`. Run this, then paste the whole output below:
 
         ```bash
-        cd dsh-termux-fix
-        git pull
-        ./install.sh --check
-        git rev-parse --short HEAD    # paste this below
+        cd dsh-termux-fix && git pull && ./install.sh --check
         ```
 
-  - type: input
-    id: commit
-    attributes:
-      label: Commit
-      description: >
-        Output of `git rev-parse --short HEAD` in your dsh-termux-fix checkout,
-        after pulling. Issues without a commit hash are hard to verify — the
-        code may already differ from what you are running.
-      placeholder: e.g. 359568a
-    validations:
-      required: true
+        That is the only command you need. Its header carries the commit, dsh
+        version, Node version and architecture, so nothing has to be collected
+        by hand.
 
   - type: textarea
     id: check
     attributes:
       label: Output of ./install.sh --check
-      description: Paste it in full. It reports the state of every patch.
+      description: >
+        Paste it in full — keep the header lines. They identify the commit and
+        versions the report was produced with.
       render: text
     validations:
       required: true
@@ -51,14 +42,3 @@ body:
       label: What you expected
     validations:
       required: false
-
-  - type: input
-    id: versions
-    attributes:
-      label: Versions
-      description: >
-        dsh version (`npm view @deepseek-ai/dsh version` or the line printed by
-        `--check`), Node (`node -v`), and architecture (`uname -m`).
-      placeholder: dsh 0.2.1-rc.2, Node v26.4.0, aarch64
-    validations:
-      required: true

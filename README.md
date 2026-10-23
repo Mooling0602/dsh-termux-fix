@@ -156,6 +156,18 @@ dsh-termux-fix — status
 
 The `commit` line is the revision that produced the report — include it when filing an issue, see [Reporting an issue](#reporting-an-issue).
 
+When dsh is not installed at all, `--check` reports that instead of failing, so the output is still worth pasting:
+
+```
+  commit        <short hash>
+  dsh version   not installed
+  modules       <not found>
+  node          v26.4.0
+  platform      Linux aarch64
+
+  dsh                                NOT INSTALLED — no patch can be assessed
+```
+
 ### Environment variables
 
 | Variable | Default | Purpose |
@@ -323,15 +335,12 @@ Verified on Termux / aarch64 / Node v26.4.0 / clang 21.1.8 with dsh 0.2.1-rc.2, 
 The patches track an unstable target: **a step can stop working because dsh changed, not because this repository broke.** Before filing, pull the latest commit — the fix may already be there.
 
 ```bash
-cd dsh-termux-fix
-git pull
-./install.sh --check        # paste the full output
-git rev-parse --short HEAD  # paste this too
+cd dsh-termux-fix && git pull && ./install.sh --check
 ```
 
-Include the short commit hash from `git rev-parse --short HEAD`. Without it a report cannot be reproduced: the behaviour you see may be from an older revision, and the maintainer has no way to tell which code you actually ran. Also include your dsh version, `node -v`, and `uname -m`.
+That is the only command you need. Paste the whole output: its header carries the commit hash, dsh version, Node version and architecture, so nothing has to be collected by hand. `--check` reports even when dsh is not installed — which is the case most worth filing.
 
-The issue template asks for these. Issues without a commit hash may be closed with a request to re-file after pulling.
+The issue template asks for this. Issues without the header may be closed with a request to re-file after pulling.
 
 ## License
 
