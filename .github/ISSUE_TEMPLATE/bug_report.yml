@@ -42,3 +42,14 @@ body:
       label: What you expected
     validations:
       required: false
+
+  - type: textarea
+    id: additional-information
+    attributes:
+      label: Additional information
+      description: >
+        Anything else that might help — workarounds you found, changes you made
+        to a step, related issues, or output from a command you already ran.
+      render: text
+    validations:
+      required: false
