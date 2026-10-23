@@ -51,18 +51,19 @@ npm view @deepseek-ai/dsh dist-tags                   # see where each tag point
 
 ## Why it breaks
 
-Android is close enough to Linux to pass every superficial check, and different enough to fail at eight separate points. None of them are configuration problems — each is a mismatch between what dsh assumes and what Android provides.
+Android is close enough to Linux to pass every superficial check, and different enough to fail at nine separate points. None of them are configuration problems — each is a mismatch between what dsh assumes and what Android provides.
 
 | # | Component | Assumption that breaks | Fix |
 |---|---|---|---|
 | 1 | `koffi` | `statx()` is declared in `<sys/stat.h>` | Exclude Android from the `statx` branch in a prebuilt binding; compile only if it does not fit |
 | 2 | `node-addon-require-builtin` | A prebuilt `android-arm64` binary exists | Compile it from upstream source |
 | 3 | `node-addon-system` | A prebuilt `android-arm64` binary exists | Substitute our own minimal N-API binding |
-| 4 | session persistence, attachments | `link(2)` works | Replace every `link()` publish with `renameat2` / `copyFile` |
+| 4 | session persistence, attachments | `link(2)` works, and every ancestor directory is readable | Replace every `link()` publish with `renameat2` / `copyFile`; stop the durable fsync walk at the first unreadable ancestor |
 | 5 | verifying the above | — | Load every binding and exercise it |
 | 6 | local speech-to-text | An `android-arm64` sherpa-onnx binary exists | Build the N-API addon against upstream's official Termux release |
 | 7 | persistent terminal (pty) | `process.platform` is only ever linux/darwin/win32, and an `android-arm64` node-pty exists | Route the inspector through its Linux branch; ship a prebuilt `pty.node` |
 | 8 | `grep` / `glob`, file writes | A prebuilt `android-arm64` ripgrep exists, and `link(2)` works | Symlink the Android ripgrep package at the system `rg`; publish new files with `renameat2` instead of `link()` |
+| 9 | image attachments (`sharp`) | A native `sharp` binding exists for every platform | Install sharp's WebAssembly fallback, matched to the installed sharp version |
 
 Step 0 is different in kind: it installs the toolchain (`clang`, `cmake`, `git`, …) those steps need. It exists because a missing `cmake` used to surface as `koffi build failed` with the real cause buried in a stack trace — see issue #1.
 
@@ -121,12 +122,53 @@ So the replacement cannot be a plain `rename()` — that would silently clobber 
 
 The first needs a syscall that Node's public API does not expose, which is why step 3 exists at all: `src/node-addon-system/system.cc` is a small N-API binding that provides both `flock` (dsh needs it) and `renameNoReplace` (our patch needs it).
 
+### Attachments: the durable walk stops at `/data/data`
+
+Publishing an attachment is not only a `link()` question. Before the bytes are staged, `dsh-attachment-local` makes the written tree crash-durable by fsyncing **every ancestor directory from the attachment home up to the filesystem root**:
+
+```js
+let level = target;
+while (level !== stop) {
+	const parent = dirname(level);
+	await syncDirectory(parent);
+	…
+}
+```
+
+That is correct on a normal Linux install and impossible on Android: opening `/data/data` for reading is denied to app processes (mode 0711, owned by the system), so the walk throws `EACCES: permission denied, open '/data/data'` and **every attachment write — image or plain file — fails before `link()` is even attempted**.
+
+The fix treats an unreadable ancestor as the boundary rather than an error: `EACCES`/`EPERM` from `syncDirectory(parent)` ends the walk. Everything from the attachment home down has already been synced, which is the part this process created; the entries above the app's private root belong to the package manager and cannot be opened or fsynced by anyone but the system. Without this, step 9 alone would still not produce a readable image.
+
+### Vision: the one package npm will not deliver
+
+`read_image` and every uploaded image are normalised by `@deepseek-ai/dsh-attachment-local`, which calls `require("sharp")` on the first raster operation. On android-arm64 that throws:
+
+```
+Error: Could not load the "sharp" module using the android-arm64 runtime
+```
+
+`sharp@0.35.x` ships no JavaScript decoder. It selects a native binding from a per-platform optional dependency (`@img/sharp-linux-arm64`, …), and npm installs only the packages whose `os`/`cpu` fields match the host. There are 25 of them — 15 bindings plus the 10 libvips companions beside them — and **none targets Android**, so only `@img/colour` lands in the tree. This has nothing to do with `--ignore-scripts`: the platform packages are filtered out before any lifecycle script would run, and `sharp` itself has no install script in 0.35.
+
+sharp's loader ends with one more candidate that is not in the platform table, and it is the path upstream documents for platforms without a native build:
+
+```js
+sharp = require("@img/sharp-wasm32/sharp.node");
+```
+
+That is libvips compiled to WebAssembly. It is **not an optional dependency of `sharp`**, so npm never installs it — that is the entire gap. Step 9 downloads `@img/sharp-wasm32` matched to the installed sharp version (its API is version-locked), plus the `@emnapi/runtime` bridge and `tslib`, stages them with `npm install` outside the dsh tree, then copies them in beside `sharp`.
+
+Copying instead of installing in place is deliberate: any `npm install` run against the dsh tree reconciles it against its lockfile and prunes everything it did not install itself, including these packages and the compiled bindings from steps 1–3.
+
+The trade-off is speed. WebAssembly runs single-threaded and pays module instantiation on first use; a 1080×2460 screenshot takes roughly 0.3–0.6 s to probe and resize — slower than a native build, and entirely usable for chat images. A native libvips would be faster, but upstream publishes no Android binary, and building one means a node-gyp toolchain against Termux's libvips.
+
+The pipeline requires sharp lazily, so the packages are only consulted at the first image operation — restart dsh after running the installer, which is what its final line tells you to do anyway. The step itself never needs a reinstall: a second run reports the package as already loading and goes straight to the round-trip check.
+
 ## Usage
 
 ```
 ./install.sh              Apply every step. Idempotent — safe to re-run.
 ./install.sh --check      Report status of each patch. Changes nothing.
-./install.sh --step 0     Run one step only (0-8).
+./install.sh --step 0     Run one step only (0-9).
 ./install.sh --list       List steps.
 ./install.sh --help       Full options.
 ```
@@ -148,7 +190,8 @@ dsh-termux-fix — status
   3 system binding                   present (8488 bytes)
   3 flock.js guard                   allows android
   4 session-persistence              patched (3 refs)
-  4 attachment-local                 patched (2 refs)
+  4 attachment-local                 link() fallback patched (3 refs)
+  4 attachment durability            patched (walk stops at an unreadable ancestor)
   6 sherpa addon                     present (616680 bytes)
   6 sensevoice platform gate         allows android
   6 addon library preload            patched
@@ -157,6 +200,7 @@ dsh-termux-fix — status
   7 pty binding                      present, prebuilt (97768 bytes)
   8 ripgrep shim                     present -> /data/data/com.termux/files/usr/bin/rg
   8 fs-local link fallback           patched
+  9 image attachments                ok (sharp 0.35.5 via wasm32)
 ```
 
 The `commit` line is the revision that produced the report — include it when filing an issue, see [Reporting an issue](#reporting-an-issue).
@@ -188,6 +232,8 @@ When dsh is not installed at all, `--check` reports that instead of failing, so 
 
 Only `koffi` needs a real recompile; the other two are N-API v9 and survive Node upgrades. Step 2 skips work when its binding is already present, so a plain re-run is cheap.
 
+Step 9's packages are plain directories under `node_modules` and are wiped with the rest of the tree. Its staging cache in `$DSH_FIX_WORKDIR/sharp-wasm/` survives, so a re-run copies the same version back without touching the network — until dsh ships a different `sharp`, at which point the step fetches that version's matching WebAssembly build.
+
 **Step 6 is the fragile one.** It writes into `sherpa-onnx-node`, which npm installs as a transitive dependency of the voice-input bundle. A reinstall wipes the compiled `.node` and the `.so` copies. Worse, if you use pnpm (dsh profiles do), `pnpm install` rebuilds the store from scratch and will transport you back to `Local speech is unavailable for android-arm64`. Re-run `./install.sh --step 6` after any dependency change. The build artefacts stay in `$DSH_FIX_WORKDIR/sherpa-onnx/`, so the rebuild is a link step, not a download — unless you cleared that directory.
 
 If an update leaves a step unhappy, you get `upstream layout changed` instead of a half-patched install — the patch refused to land in the wrong place. That is the signal to report it so the anchors can be refreshed: say which dsh version you moved to and which step refused, and follow [Reporting an issue](#reporting-an-issue).
@@ -199,7 +245,7 @@ If an update leaves a step unhappy, you get `upstream layout changed` instead of
 - Node.js ≥ 20 with headers at `$PREFIX/include/node` (`pkg install nodejs` provides both).
 - **`ripgrep`**, for the `grep` and `glob` tools. Step 8 points dsh at the system binary with a symlink; without it the step warns and the two tools stay broken. `pkg install ripgrep`.
 - `clang`, `cmake`, `make`, `git`, `tar`, `curl`. **Step 0 installs these via `pkg`** and is a no-op when they are present, so you do not normally need to install them by hand. They are still listed here because `--step 1` and later assume them if you skip step 0. `cmake` is only needed if the prebuilt koffi binding cannot be used — see below.
-- Network access for steps 2 and 6 (clone/compile sources, fetch the sherpa release). Both are skipped when their output is already present.
+- Network access for steps 2, 6 and 9 (clone/compile sources, fetch the sherpa release, fetch the ~9 MB `@img/sharp-wasm32` package). All three are skipped when their output is already present.
 - For speech, the voice-input bundle enabled in your dsh profile. `--check` reports `6 speech package  not installed` if it is missing.
 
 ## Troubleshooting
@@ -209,6 +255,10 @@ If an update leaves a step unhappy, you get `upstream layout changed` instead of
 **`no sandbox backend is usable on this host`** — Termux has neither bubblewrap nor a Landlock-enforcing kernel, so dsh's `workspace-write` sandbox mode refuses to run commands. This is **not** something these patches fix. Choose `danger-full-access` for tool execution on this host.
 
 **`EACCES ... cannot write <file>` from dsh's own file tools** — same root cause as step 4: dsh's atomic write uses `link()`. Writing through `bash` redirection works. Step 4 fixes the session/attachment paths; the generic file tool path is upstream's, not patched here.
+
+**`EACCES: permission denied, open '/data/data'` when attaching a file or reading an image** — the attachment store's durable fsync walk, not a permissions problem in your home directory. Fixed by the step 4 patch; re-run `./install.sh`. `--check` reports `4 attachment durability` separately from the `link()` fallback, so a half-patched store is visible.
+
+**`Could not load the "sharp" module using the android-arm64 runtime`** — image attachments. Step 9 installs sharp's WebAssembly fallback; if it never ran, or a reinstall wiped it, re-run `./install.sh` (not `--step 9` alone: the same reinstall also wipes step 4's attachment patch, which the first save needs). `--check` shows `9 image attachments`.
 
 **Speech still says `Local speech is unavailable for android-arm64`** — step 6 did not run, or a reinstall wiped it. `./install.sh --check` shows three lines for step 6; if any says `MISSING`/`NOT patched`, re-run `--step 6`.
 
@@ -276,9 +326,9 @@ pkg reinstall cmake     # only if cmake itself is damaged and libc++ is current
 
 ### Known gaps
 
-**`Could not load the "sharp" module using the android-arm64 runtime`** — image attachments, and the one gap left. It is **not** fixed by anything here, and is not caused by installing with `--ignore-scripts`. Like the two gaps step 8 closes, it is a missing-platform-package problem: `sharp` resolves a per-platform binary that npm can only supply through `optionalDependencies`, and no Android entry exists on the registry.
+**None of the nine layers above is left open.** Three of them were missing-platform-package failures that earlier versions of this file listed as untracked upstream; each now has a local substitute and a step that installs it.
 
-`sharp@0.35.x` ships no JavaScript fallback and selects a `@img/sharp-<platform>-<arch>` package at runtime; `sharp` declares no `os: ["android"]` in any of them, so npm skips them all and only `@img/colour` is installed. Reached lazily from `@deepseek-ai/dsh-attachment-local`, so the plugin loads and text-only use is unaffected — only the first image normalisation throws. There is no fix in this repository: a working image pipeline would need `sharp` or libvips compiled against bionic, which upstream does not publish.
+**`Could not load the "sharp" module ...`** — image attachments, closed by step 9. `sharp@0.35.x` selects a `@img/sharp-<platform>-<arch>` native binding; the registry publishes 25 of them (15 bindings plus 10 libvips companions) and none declares `os: ["android"]`, so npm installs none and only `@img/colour` is present. Reached lazily from `@deepseek-ai/dsh-attachment-local`, so the plugin loads and text-only use is unaffected — the first image operation is what throws. Step 9 supplies sharp's own documented fallback for platforms without a native build, the WebAssembly package `@img/sharp-wasm32`, matched to the installed sharp version. There is still no *native* Android build; that would need `sharp` or libvips compiled against bionic, which upstream does not publish.
 
 Two gaps of the same shape **are** fixed now, by step 8 (earlier versions of this file listed them as upstream issues left unpatched):
 
@@ -286,7 +336,7 @@ Two gaps of the same shape **are** fixed now, by step 8 (earlier versions of thi
 
 **`write` cannot create a file** — `EACCES ... link '....tmpdir/xxx.tmp' -> 'xxx'`. `dsh-fs-local` publishes every write through a private staging file in the same directory, and the *new file* half goes through `link(2)`; Android SELinux denies hard links outright, so any write whose target does not exist yet fails (replacing an existing file uses `rename(2)` and is unaffected). The fix catches `EACCES`/`EPERM` and retries with `renameat2(RENAME_NOREPLACE)` — atomic, `EEXIST` on collision, the same contract `link`-when-absent provided — using the `system.node` binding step 3 already installs.
 
-Both are lazy: the first write and the first search are what trigger them, never boot. A patched install needs a dsh restart to pick either up.
+All three are lazy: the first write, the first search and the first image are what trigger them, never boot. A running dsh needs a restart to pick any of them up — steps 4 and 8 patch installed JavaScript, and step 9 installs packages the attachment pipeline only loads at that first image.
 
 ## How it works
 
@@ -310,6 +360,7 @@ scripts/
   step6-speech.sh           Download upstream Termux release, build the addon
   step7-terminal.sh         Terminal platform gate + install/build the pty binding
   step8-platform-gaps.sh    ripgrep android shim + fs-local link() fallback
+  step9-vision.sh           Install sharp's WebAssembly fallback (wasm32)
   build-require-builtin.sh  Clang command line replicating upstream build.ts
   build-sherpa-addon.sh     Clang command line for the sherpa N-API wrapper
   build-node-pty.sh         Compile node-pty's pty.cc against bionic
@@ -323,7 +374,7 @@ src/node-pty/
   pty.node                  Prebuilt aarch64 pty binding, built against bionic
   pty.json                  Version, arch and checksum for the above
 patch/
-  patch-session-persistence.mjs   Anchored patcher for the two JS packages
+  patch-session-persistence.mjs   link() fallbacks + attachment durability walk
   patch-sherpa-addon.mjs          Library preload + sensevoice platform gate
   patch-terminal-android.mjs      Inspector platform gate + node-pty load path
   patch-platform-gaps.mjs         ripgrep android shim + fs-local link() fallback
@@ -333,7 +384,7 @@ docs/
 
 ## Status
 
-Verified on Termux / aarch64 / Node v26.4.0 / clang 21.1.8 with dsh 0.2.1-rc.3, koffi 3.1.1 and sherpa-onnx 1.13.8.
+Verified on Termux / aarch64 / Node v26.4.0 / clang 21.1.8 with dsh 0.2.1-rc.3, koffi 3.1.1, sharp 0.35.5 (wasm32) and sherpa-onnx 1.13.8.
 
 **This is not an officially supported path.** Everything here modifies files inside an installed npm package. Upgrades undo it, upstream test suites do not cover it, and dsh internals may change without notice.
 

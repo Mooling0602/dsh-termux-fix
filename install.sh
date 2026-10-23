@@ -30,7 +30,7 @@ USAGE
 
 OPTIONS
   --check          Report the status of every patch without changing anything.
-  --step N         Run only step N (0-8).
+  --step N         Run only step N (0-9).
   --list           List the steps.
   -h, --help       Show this help.
 
@@ -54,11 +54,12 @@ STEPS
   1  koffi                      statx() is unavailable in the Android NDK
   2  node-addon-require-builtin no android prebuilt; compile from source
   3  node-addon-system          no android prebuilt; substitute our binding
-  4  session-persistence        SELinux blocks link(); renameat2 / copyFile
+  4  session-persistence        SELinux link() ban + unreadable ancestors
   5  verify                     load every binding and exercise it
   6  speech                     local SenseVoice; no android prebuilt
   7  terminal                   android gate + no android-arm64 pty prebuild
   8  platform-gaps              ripgrep shim + fs-local link() fallback
+  9  vision                     sharp via WebAssembly; no android-arm64 build
 
 NOTE
   These patches change files inside the installed dsh package. Every upgrade
@@ -73,11 +74,12 @@ list_steps() {
 1  koffi                      statx() unavailable; prebuilt binding, compile as fallback
 2  node-addon-require-builtin no android prebuilt; compiled from upstream source
 3  node-addon-system          no android prebuilt (source private); substitute binding
-4  session-persistence        SELinux denies link(); renameat2 / copyFile fallbacks
+4  session-persistence        SELinux link(); durable fsync walk stops at /data/data
 5  verify                     load all bindings, check the EEXIST contract
 6  speech                     local speech-to-text via sherpa-onnx
 7  terminal                   persistent terminal: android gate + pty binding
 8  platform-gaps              ripgrep android shim + fs-local link() fallback
+9  vision                     image attachments: sharp via WebAssembly
 TXT
 }
 
@@ -197,8 +199,16 @@ check_status() {
     if [ -f "$att" ]; then
         local n
         n=$(grep -c "dsh-termux-fix" "$att" 2>/dev/null || true)
-        [ "$n" -ge 2 ] && status "4 attachment-local" "patched ($n refs)" \
-                       || status "4 attachment-local" "NOT patched ($n refs)"
+        if grep -qF 'dsh-termux-fix: attachment publish' "$att"; then
+            status "4 attachment-local" "link() fallback patched ($n refs)"
+        else
+            status "4 attachment-local" "NOT patched ($n refs)"
+        fi
+        if grep -qF 'dsh-termux-fix: durable sync' "$att"; then
+            status "4 attachment durability" "patched (walk stops at an unreadable ancestor)"
+        else
+            status "4 attachment durability" "NOT patched (saves fail opening /data/data)"
+        fi
     else
         status "4 attachment-local" "missing"
     fi
@@ -287,6 +297,27 @@ check_status() {
     else
         status "8 fs-local link fallback" "package missing"
     fi
+
+    # 9 vision — sharp has no android-arm64 binding, and npm filters out every
+    # per-platform optional dependency it would otherwise load, so the question
+    # is only whether the installed tree can load sharp at all. That require()
+    # is exactly what dsh-attachment-local does at the first image.
+    local sh=$dmod/sharp
+    if [ -d "$sh" ]; then
+        local shver
+        shver=$(node -e 'console.log(require(process.argv[1]).version)' "$sh/package.json" 2>/dev/null || echo '?')
+        if node -e 'require(process.argv[1])' "$sh" >/dev/null 2>&1; then
+            if [ -d "$dmod/@img/sharp-wasm32" ]; then
+                status "9 image attachments" "ok (sharp $shver via wasm32)"
+            else
+                status "9 image attachments" "ok (sharp native binding)"
+            fi
+        else
+            status "9 image attachments" "sharp will not load — read_image fails"
+        fi
+    else
+        status "9 image attachments" "package missing"
+    fi
     printf '\n'
     info "run ./install.sh to apply, or ./install.sh --step N for one step"
 }
@@ -323,7 +354,8 @@ run_step() {
         6) bash "$HERE/scripts/step6-speech.sh" ;;
         7) bash "$HERE/scripts/step7-terminal.sh" ;;
         8) bash "$HERE/scripts/step8-platform-gaps.sh" ;;
-        *) die "no such step: $n (valid: 0-8)" ;;
+        9) bash "$HERE/scripts/step9-vision.sh" ;;
+        *) die "no such step: $n (valid: 0-9)" ;;
     esac
 }
 
@@ -369,7 +401,8 @@ main() {
     run_step 5; printf '\n'
     run_step 6; printf '\n'
     run_step 7; printf '\n'
-    run_step 8
+    run_step 8; printf '\n'
+    run_step 9
 
     printf '\n'
     ok "done — restart dsh"

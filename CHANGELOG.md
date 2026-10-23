@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.12.0] — 2026-10-24
+
+### Added
+
+- **Step 9 (`scripts/step9-vision.sh`): image attachments work — `sharp` now runs as WebAssembly.** `read_image` and every uploaded image are normalised by `dsh-attachment-local`, which requires `sharp` on the first raster operation; on android-arm64 that require died with `Could not load the "sharp" module using the android-arm64 runtime`. `sharp@0.35.x` selects a native binding from a per-platform optional dependency (`@img/sharp-<platform>-<arch>`), the registry publishes 25 of them (15 bindings plus 10 libvips companions), none targets Android, and npm filters out every one that does not match the host — the same missing-platform-package shape step 8 closed for ripgrep, and unaffected either way by `--ignore-scripts`. sharp's loader already ends with a fallback that upstream documents for platforms without a native build, `require("@img/sharp-wasm32/sharp.node")` — libvips compiled to WebAssembly — but that package is not an optional dependency, so npm never installed it. Step 9 fetches `@img/sharp-wasm32` **at exactly the installed sharp version** together with its `@emnapi/runtime` bridge and `tslib`, stages them with `npm install` outside the dsh tree, and copies them in beside `sharp`. Installing in place is deliberately avoided: any npm operation against the dsh tree reconciles it against the lockfile and prunes what it did not install itself, including the compiled bindings from steps 1–3. The step then loads sharp, encodes/decodes/resizes a tiny PNG, and finishes with a full attachment save → verified read round-trip on a throwaway root, which catches a missing step 4 patch here instead of at the first user image.
+- **`9 image attachments` in `--check`, and `--step 9` / `--list` entries.** `run_step()`, `--help` and `--list` accept 0-9; the status line reports whether sharp loads and whether it loads through the WebAssembly fallback or a native binding.
+
+### Fixed
+
+- **Every attachment write failed on Termux before `sharp` was ever reached.** `dsh-attachment-local` makes a written attachment durable by fsyncing *every ancestor directory from the attachment home up to the filesystem root*; Android denies opening `/data/data` (mode 0711, system-owned), so the walk threw `EACCES: permission denied, open '/data/data'` and no attachment — image or plain file — could be published at all. The step 4 patcher now wraps that walk: `EACCES`/`EPERM` from an ancestor means the process may not go higher, so the walk stops at the app's private root instead of failing the write. Everything from the attachment home down is already synced, and the unreadable entries above it belong to the package manager. This was invisible while the first image died earlier, inside `sharp`, but it also broke ordinary file uploads.
+- **`4 attachment-local` in `--check` is now two lines** — the `link()` fallback and the durable-walk patch are reported separately, so a half-patched attachment store is visible instead of a ref count that only says "patched".
+
 ## [1.11.0] — 2026-10-23
 
 ### Added

@@ -56,6 +56,32 @@ The attachment paths are content-addressed: the target filename is derived from 
 
 Session persistence has no such property: the staged files differ per session update, so `copyFile` there would be a genuine last-writer-wins clobber. That is why it gets the syscall-backed path instead.
 
+## Why the durable fsync walk stops at `/data/data`
+
+`dsh-attachment-local` does not merely write a file; it tries to make the whole path to it crash-durable. `ensureDurableHome()` hands the attachment home and the filesystem root to `ensureDurableDirectory()`, which fsyncs each ancestor directory on the way up:
+
+```js
+let level = target;
+while (level !== stop) {
+	const parent = dirname(level);
+	await syncDirectory(parent);
+	if (parent === level) return;
+	level = parent;
+}
+```
+
+On Linux that is right: a directory entry is only durable once its parent has been synced. On Android it cannot complete, because `/data/data` is mode `0711`, owned by the system, and an app process may traverse it but not open it for reading:
+
+```
+EACCES: permission denied, open '/data/data'
+```
+
+The walk lives in the attachment store, so this failed **every** attachment publish — images and plain files alike — before `link()` was ever attempted. It went unnoticed because image reads died earlier, inside `sharp`, and plain-file uploads are the rarer path.
+
+The patch keeps the intent and drops the impossible part: `EACCES`/`EPERM` from an ancestor ends the walk instead of failing the write. By then everything from the attachment home down has been synced, which is what this process created. The entries above the app's private root belong to the package manager; no app can fsync them, and a process crash is not going to lose them.
+
+One subtlety: `syncDirectory()` itself is not patched. It is also used for directories this process does create, where a permission failure is a genuine error and must still surface. Only the walk treats "the filesystem refuses to go higher" as the boundary.
+
 ## Anchor-based patching
 
 `patch-session-persistence.mjs` locates each rewrite point by an exact substring and requires it to appear exactly once:
@@ -178,6 +204,31 @@ Two consequences worth knowing:
 - **The same hook fires when any global package pulls dsh in.** Installing `@deepseek-harness-tui/dsh-tui` alongside dsh runs koffi's hook again, because koffi is a hard dependency of `@deepseek-ai/dsh-fs-local`. Pass `--ignore-scripts` to that install too. (`--omit=optional` is not a way out: koffi is a regular dependency, and dsh's own `optionalDependencies` is empty.)
 - **`--ignore-scripts` is tree-wide, not global-install-wide.** It also silences `node-pty`'s `install` script, whose prebuild fetcher produces nothing usable on Android either — upstream publishes no `android-arm64` prebuild, which is what step 7 supplies. Steps 2, 3 and 6 cover the remaining native packages.
 
+## Why `sharp` runs as WebAssembly
+
+`sharp` is the one native dependency dsh uses that has no lifecycle script and no feasible local build, so the `--ignore-scripts` story does not apply to it at all. Its loader (`dist/sharp.cjs`) resolves a platform binding in a fixed order, then throws the error everyone sees:
+
+```
+Error: Could not load the "sharp" module using the android-arm64 runtime
+```
+
+The order is worth knowing, because the last entry is the one that saves Android:
+
+1. `src/build/Release/sharp-<platform>-<version>.node` — a source build inside the package.
+2. `src/build/Release/sharp-wasm32-<version>.node` — a packaged WebAssembly build.
+3. One `@img/sharp-<platform>-<arch>` optional dependency, selected by a `switch` over the runtime platform string.
+4. `require("@img/sharp-wasm32/sharp.node")` — the universal fallback.
+
+Android matches none of step 3's cases (`android-arm64` is not in the `switch`), and nothing above it exists, because `sharp`'s 25 optional platform packages (15 bindings, 10 libvips companions) declare no `os: ["android"]` and npm filters them out at install time. That is why the fix cannot be "install the right optional dependency": `@img/sharp-wasm32` is a real npm package, it is simply not declared as one, so no installer ever fetches it.
+
+Why copy instead of `npm install` in the dsh tree: npm treats that tree as the reconciliation target of its lockfile, and anything it did not install itself is extraneous and gets pruned — including the koffi, pty and system bindings from steps 1–3. Step 9 stages the three packages (`@img/sharp-wasm32`, `@emnapi/runtime`, `tslib`) in `$DSH_FIX_WORKDIR/sharp-wasm/` and copies them in.
+
+Version-locking matters more than it looks. The wasm package contains the N-API-visible surface of one sharp release and its own libvips; step 9 reads the installed `sharp` version and asks npm for exactly that `@img/sharp-wasm32@<version>`, so a future dsh that ships a different sharp gets a matching build or fails the step, rather than loading a mismatched bridge.
+
+The cost is CPU time: the WebAssembly build is single-threaded and instantiates on first use. Measured on a 1080×2460 PNG screenshot (Termux, aarch64): metadata ~0.3 s, full decode ~0.3 s, resize to 1568 px plus JPEG encode ~0.6 s, WebP encode ~0.25 s. That is slower than a native binding and perfectly adequate for chat images. A native build would also need libvips compiled against bionic; Termux packages `libvips 8.18.7`, but a node-gyp sharp build against it is a much larger surface than a version-matched wasm drop-in.
+
+Finally, sharp is required lazily from the attachment pipeline, so the packages are only consulted at the first image operation. Restart dsh after running the installer; that is also the state the measurements above were taken in.
+
 ## Speech: why rpath does not work on Android
 
 Worth writing down, because the failure looks like a missing library and sends you chasing paths.
@@ -275,4 +326,4 @@ Four places assume aarch64:
 3. `SYS_renameat2` fallback constant `276` — see the table above.
 4. `node-addon-system-android-arm64` — the package name must match `${platform}-${arch}` because `flock.js` resolves it by that exact string.
 
-Steps 1, 2, 4 and 7 are otherwise architecture-independent.
+Steps 1, 2, 4 and 7 are otherwise architecture-independent. Step 9 does not appear in the list at all: the WebAssembly build is wasm32 on every host, so it is architecture-independent by construction.

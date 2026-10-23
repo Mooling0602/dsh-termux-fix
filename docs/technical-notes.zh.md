@@ -56,6 +56,32 @@ Android 的 SELinux 策略对应用进程的 `link(2)` 返回 `EACCES`，而且�
 
 会话持久化没有这个性质：每次会话更新产生的暂存文件都不同，在那里用 `copyFile` 就是真正的后写者覆盖。所以它走系统调用那条路。
 
+## 为什么持久化 fsync 遍历止步于 `/data/data`
+
+`dsh-attachment-local` 并不只是写一个文件，它还要把通往该文件的整条路径都做成崩溃可持久的。`ensureDurableHome()` 把附件主目录和文件系统根交给 `ensureDurableDirectory()`，由后者在向上遍历时逐个 fsync 各级祖先目录：
+
+```js
+let level = target;
+while (level !== stop) {
+	const parent = dirname(level);
+	await syncDirectory(parent);
+	if (parent === level) return;
+	level = parent;
+}
+```
+
+在 Linux 上这是对的：一个目录项只有在父目录被 sync 之后才是持久的。在 Android 上这个遍历走不完，因为 `/data/data` 的权限是 `0711`、属主是系统，应用进程可以穿过它，但不能以读方式打开它：
+
+```
+EACCES: permission denied, open '/data/data'
+```
+
+这个遍历就在附件存储里，所以在 `link()` 被尝试之前，**每一次**附件发布都会失败——图片和普通文件都一样。它一直没被发现，是因为读图更早就在 `sharp` 里死掉了，而普通文件上传是较少走的路径。
+
+补丁保留了原意、丢掉做不到的那部分：祖先目录返回 `EACCES`/`EPERM` 时结束遍历，而不是让写入失败。走到这里时，从附件主目录往下的一切都已经 sync 过，而那正是本进程所创建的部分。应用私有根之上的目录项属于包管理器；任何应用都无法 fsync 它们，进程崩溃也不会把它们丢掉。
+
+一个细节：`syncDirectory()` 本身没有打补丁。它也会用于本进程确实会创建的目录，在那里权限失败是真正的错误，必须照常暴露出来。只有这个遍历把「文件系统拒绝再往上」当作边界。
+
 ## 基于锚点的补丁
 
 `patch-session-persistence.mjs` 用精确子串定位每个改写点，并要求它恰好出现一次：
@@ -178,6 +204,31 @@ $ echo $?
 - **任何把 dsh 拉成依赖的全局包都会再触发同一个钩子。** 把 `@deepseek-harness-tui/dsh-tui` 和 dsh 一起装时，koffi 的钩子会再跑一次，因为 koffi 是 `@deepseek-ai/dsh-fs-local` 的硬依赖。那次安装同样要带 `--ignore-scripts`。（`--omit=optional` 不是出路：koffi 是常规依赖，而 dsh 自己的 `optionalDependencies` 是空的。）
 - **`--ignore-scripts` 是整棵树生效的，不只针对全局安装本身。** 它同时会静默 `node-pty` 的 `install` 脚本——那个预编译下载器在 Android 上也产不出可用的东西，上游没有发布 `android-arm64` 预编译包，而第 7 步提供的正是它。其余原生包由第 2、3、6 步覆盖。
 
+## 为什么 `sharp` 以 WebAssembly 运行
+
+`sharp` 是 dsh 用到的原生依赖里唯一一个既没有生命周期脚本、也没有可行的本地构建方案的，所以 `--ignore-scripts` 那套说法对它完全不适用。它的加载器（`dist/sharp.cjs`）按固定顺序解析平台绑定，然后抛出大家都见过的那句错：
+
+```
+Error: Could not load the "sharp" module using the android-arm64 runtime
+```
+
+这个顺序值得知道，因为最后一项才是救 Android 的：
+
+1. `src/build/Release/sharp-<platform>-<version>.node`——包内的源码构建产物。
+2. `src/build/Release/sharp-wasm32-<version>.node`——随包发布的 WebAssembly 构建。
+3. 一个 `@img/sharp-<platform>-<arch>` 可选依赖，由一段按运行时平台字符串分支的 `switch` 选出。
+4. `require("@img/sharp-wasm32/sharp.node")`——通用的兜底。
+
+Android 匹配不上第 3 步的任何分支（`switch` 里没有 `android-arm64`），而它上面的几项也都不存在，因为 `sharp` 的 25 个可选平台包（15 个 binding 包 + 10 个 libvips 配套包）都没有声明 `os: ["android"]`，npm 在安装时就把它们过滤掉了。这就是为什么修法不可能是「装上正确的可选依赖」：`@img/sharp-wasm32` 是一个真实的 npm 包，只是没被声明成可选依赖，所以任何安装器都不会去取它。
+
+为什么是拷贝，而不是直接在 dsh 树里 `npm install`：npm 把那棵树当作 lockfile 的对账目标，凡不是它自己安装的都算多余，会被剪掉——包括第 1–3 步的 koffi、pty 和 system 绑定。第 9 步把三个包（`@img/sharp-wasm32`、`@emnapi/runtime`、`tslib`）暂存在 `$DSH_FIX_WORKDIR/sharp-wasm/`，再拷贝进去。
+
+版本锁定比看上去更要紧。wasm 包里是某一个 sharp 版本对 N-API 可见的那层接口，外加它自带的 libvips；第 9 步读取已安装的 `sharp` 版本，让 npm 精确取该版本的 `@img/sharp-wasm32@<version>`，这样将来 dsh 换了别版本的 sharp，要么拿到匹配的构建，要么这一步直接失败，而不是加载一个版本错位的桥接层。
+
+代价是 CPU 时间：WebAssembly 构建是单线程的，且首次使用时要做模块实例化。在一张 1080×2460 的 PNG 截图上实测（Termux、aarch64）：读元数据约 0.3 s，完整解码约 0.3 s，缩放到 1568 px 再加 JPEG 编码约 0.6 s，WebP 编码约 0.25 s。这比原生绑定慢，用来处理聊天图片完全够用。原生构建还需要针对 bionic 编译 libvips；Termux 打包的是 `libvips 8.18.7`，但用 node-gyp 对着它构建 sharp，涉及面比塞一个版本匹配的 wasm 包大得多。
+
+最后，sharp 是由附件链路惰性 require 的，所以这些包只在第一次图片操作时才会被用到。跑完安装器后请重启 dsh；上面的实测数据也是在这个状态下测得的。
+
 ## 语音：为什么 rpath 在 Android 上不管用
 
 这条值得记下来，因为这个失败看起来像"缺库"，会让人一路去查路径。
@@ -284,4 +335,4 @@ if (process.platform === 'android') {
 3. `SYS_renameat2` 回退常量 `276`——见上表。
 4. `node-addon-system-android-arm64`——包名必须匹配 `${platform}-${arch}`，因为 `flock.js` 是按这个确切字符串解析的。
 
-第 1、2、4、7 步其余部分与架构无关。
+第 1、2、4、7 步其余部分与架构无关。第 9 步根本不在这个列表里：WebAssembly 构建在任何主机上都是 wasm32，因此天生与架构无关。

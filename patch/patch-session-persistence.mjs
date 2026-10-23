@@ -13,6 +13,15 @@
 //   3:   copyFile — targets are content-addressed, so a racing duplicate
 //        write is byte-identical and the following digest check still guards.
 // Each patch is independently idempotent (skipped when its marker is present).
+//
+// The attachment store has a second Android problem that has nothing to do with
+// link(): before publishing, it fsyncs every ancestor directory from the
+// attachment home up to the filesystem root. Android denies opening /data/data
+// (mode 0711, owned by the system), so that walk throws EACCES and every
+// attachment write — file or image — fails before link() is ever reached. The
+// walk stops at the first ancestor the process may not open; everything below
+// it is already synced, and the unreadable entries belong to the package
+// manager rather than to this process.
 import { readFileSync, writeFileSync } from 'node:fs';
 
 const files = process.argv.slice(2);
@@ -173,6 +182,37 @@ const ATT_STAGED = {
 		}`,
 };
 
+const ATT_DURABLE = {
+    id: 'attachment durable walk fallback',
+    applied: (src) => src.includes('dsh-termux-fix: durable sync'),
+    anchor: `	let level = target;
+	while (level !== stop) {
+		const parent = dirname(level);
+		await syncDirectory(parent);
+		/* v8 ignore next -- filesystem-root guard: callers pass a boundary that is an ancestor of path, so the walk reaches it first. */
+		if (parent === level) return;
+		level = parent;
+	}`,
+    replacement: `	let level = target;
+	while (level !== stop) {
+		const parent = dirname(level);
+		try {
+			await syncDirectory(parent);
+		} catch (error) {
+			/* dsh-termux-fix: durable sync stops at an unreadable ancestor.
+			   Android denies opening /data/data (mode 0711, system-owned), so
+			   fsyncing every ancestor up to / is impossible on Termux. Everything
+			   from the attachment home down is already synced; the entries above
+			   the app's private root belong to the package manager. */
+			if (error?.code === "EACCES" || error?.code === "EPERM") return;
+			throw error;
+		}
+		/* v8 ignore next -- filesystem-root guard: callers pass a boundary that is an ancestor of path, so the walk reaches it first. */
+		if (parent === level) return;
+		level = parent;
+	}`,
+};
+
 const SPECS = [
     {
         match: /dsh-session-persistence-jsonl\/lib\/index\.js$/,
@@ -184,7 +224,7 @@ const SPECS = [
     },
     {
         match: /dsh-attachment-local\/lib\/index\.js$/,
-        patches: [ATT_IMPORT, ATT_ALIAS, ATT_STAGED],
+        patches: [ATT_IMPORT, ATT_ALIAS, ATT_STAGED, ATT_DURABLE],
     },
 ];
 

@@ -51,18 +51,19 @@ npm view @deepseek-ai/dsh dist-tags                   # 看每个 tag 指向哪�
 
 ## 为什么跑不起来
 
-Android 与 Linux 足够相似，能骗过所有表面检查；又足够不同，在八个独立的地方失败。这些都不是配置问题，而是 dsh 的假设与 Android 的实际能力对不上。
+Android 与 Linux 足够相似，能骗过所有表面检查；又足够不同，在九个独立的地方失败。这些都不是配置问题，而是 dsh 的假设与 Android 的实际能力对不上。
 
 | # | 组件 | 失效的假设 | 修法 |
 |---|---|---|---|
 | 1 | `koffi` | `<sys/stat.h>` 声明了 `statx()` | 提供已排除 `statx` 的预编译绑定；对不上才编译 |
 | 2 | `node-addon-require-builtin` | 存在 `android-arm64` 预编译产物 | 从上游源码编译 |
 | 3 | `node-addon-system` | 存在 `android-arm64` 预编译产物 | 用自写的最小 N-API 绑定顶替 |
-| 4 | 会话持久化、附件 | `link(2)` 可用 | 全部改成 `renameat2` / `copyFile` |
+| 4 | 会话持久化、附件 | `link(2)` 可用，且各级祖先目录都可读 | 全部改成 `renameat2` / `copyFile`；持久化 fsync 遍历在第一个不可读的祖先目录处停下 |
 | 5 | 验证 | — | 加载每个绑定并实跑 |
 | 6 | 本地语音输入 | 存在 `android-arm64` 的 sherpa-onnx | 用上游官方 Termux 版编译 N-API 封装 |
 | 7 | 持久终端 (pty) | `process.platform` 只会是 linux/darwin/win32；且存在 `android-arm64` 的 node-pty | 让 inspector 走 Linux 分支；提供预编译的 `pty.node` |
 | 8 | `grep` / `glob`、文件写入 | 存在 `android-arm64` 的 ripgrep，且 `link(2)` 可用 | 把 Android ripgrep 包软链到系统 `rg`；新建文件改用 `renameat2` 而非 `link()` |
+| 9 | 图片附件（`sharp`） | 每个平台都有原生 `sharp` 绑定 | 安装 sharp 的 WebAssembly 兜底包，版本与已安装的 sharp 匹配 |
 
 第 0 步性质不同：它负责装好上面几步要用的工具链（`clang`、`cmake`、`git` 等）。之所以有这一步，是因为缺 `cmake` 过去只会表现为 `koffi build failed`，真正的原因埋在堆栈里——见 issue #1。
 
@@ -121,12 +122,53 @@ dsh 在三处用 `link()`，而且三处都在做同一件特定的事：**原�
 
 前者需要 Node 公开 API 没有暴露的系统调用，这正是第 3 步存在的原因：`src/node-addon-system/system.cc` 是一个小型 N-API 绑定，同时提供 `flock`（dsh 需要）和 `renameNoReplace`（我们的补丁需要）。
 
+### 附件：持久化遍历止步于 `/data/data`
+
+发布附件不只是 `link()` 的问题。在字节被暂存之前，`dsh-attachment-local` 会 fsync **从附件主目录一路到文件系统根的每一级祖先目录**，让写出的目录树能扛住崩溃：
+
+```js
+let level = target;
+while (level !== stop) {
+	const parent = dirname(level);
+	await syncDirectory(parent);
+	…
+}
+```
+
+这在普通 Linux 安装上是正确的，在 Android 上却做不到：应用进程被禁止以读方式打开 `/data/data`（权限 `0711`，属主是系统），于是这个遍历抛出 `EACCES: permission denied, open '/data/data'`，**在 `link()` 被尝试之前，每一次附件写入——图片也好普通文件也好——就已经失败了**。
+
+修法是把不可读的祖先当作边界，而不是当作错误：`syncDirectory(parent)` 返回 `EACCES`/`EPERM` 时结束遍历。此时从附件主目录往下已经全部 sync 过，而那正是本进程创建的部分；应用私有根之上的条目属于包管理器，除了系统没有人能打开或 fsync 它们。少了这一条，光靠第 9 步仍然做不出一张能读的图。
+
+### 视觉：npm 唯一送不到的包
+
+`read_image` 和每一张上传的图片都由 `@deepseek-ai/dsh-attachment-local` 归一化，它在第一次做栅格操作时调用 `require("sharp")`。在 android-arm64 上这会抛错：
+
+```
+Error: Could not load the "sharp" module using the android-arm64 runtime
+```
+
+`sharp@0.35.x` 不带 JavaScript 解码器。它从按平台划分的可选依赖（`@img/sharp-linux-arm64` 等）里选原生绑定，而 npm 只安装 `os`/`cpu` 字段与主机匹配的包。这样的包有 25 个——15 个 binding 包 + 10 个 libvips 配套包，后者就紧挨着它们——**没有一个面向 Android**，所以树里只会出现 `@img/colour`。这和 `--ignore-scripts` 毫无关系：平台包在任何生命周期脚本运行之前就被过滤掉了，而 sharp 0.35 本身没有 install 脚本。
+
+sharp 的加载器最后还有一个不在平台表里的候选，正是上游为没有原生构建的平台指明的路径：
+
+```js
+sharp = require("@img/sharp-wasm32/sharp.node");
+```
+
+那就是编译成 WebAssembly 的 libvips。它**不是 `sharp` 的可选依赖**，所以 npm 从来不会安装它——整个缺口就是这么来的。第 9 步按已安装的 sharp 版本下载匹配的 `@img/sharp-wasm32`（这个包的 API 与版本锁定），外加 `@emnapi/runtime` 桥接层和 `tslib`，在 dsh 树之外用 `npm install` 暂存，再拷贝到 `sharp` 旁边。
+
+选择拷贝而不是就地安装是有意为之：任何针对 dsh 树运行的 `npm install` 都会拿 lockfile 来对账，并剪掉所有不是它自己安装的东西，包括这几个包和第 1–3 步编译出的绑定。
+
+代价是速度。WebAssembly 单线程运行，首次使用时还要付出模块实例化的开销；一张 1080×2460 的截图探测加缩放大约要 0.3–0.6 s——比原生构建慢，用来处理聊天图片完全够用。原生 libvips 会更快，但上游不发布 Android 二进制，自己编就得用 node-gyp 工具链对着 Termux 的 libvips 构建。
+
+附件链路是惰性 require sharp 的，所以这些包只在第一次图片操作时才会被用到——跑完安装器后请重启 dsh，反正安装器的最后一行本来也是这么提示的。这一步本身永远不需要重装：第二次运行会报告该包已能正常加载，然后直接进往返校验。
+
 ## 用法
 
 ```
 ./install.sh              应用全部步骤。幂等，可重复运行。
 ./install.sh --check      只报告各补丁状态，不做任何改动。
-./install.sh --step 3     只跑某一步（0-8）。
+./install.sh --step 0     只跑某一步（0-9）。
 ./install.sh --list       列出步骤。
 ./install.sh --help       完整选项。
 ```
@@ -148,7 +190,8 @@ dsh-termux-fix — status
   3 system binding                   present (8488 bytes)
   3 flock.js guard                   allows android
   4 session-persistence              patched (3 refs)
-  4 attachment-local                 patched (2 refs)
+  4 attachment-local                 link() fallback patched (3 refs)
+  4 attachment durability            patched (walk stops at an unreadable ancestor)
   6 sherpa addon                     present (616680 bytes)
   6 sensevoice platform gate         allows android
   6 addon library preload            patched
@@ -157,6 +200,7 @@ dsh-termux-fix — status
   7 pty binding                      present, prebuilt (97768 bytes)
   8 ripgrep shim                     present -> /data/data/com.termux/files/usr/bin/rg
   8 fs-local link fallback           patched
+  9 image attachments                ok (sharp 0.35.5 via wasm32)
 ```
 
 `commit` 那一行是产出这份报告的版本，提 issue 时请一并贴上，见[提交 Issue](#提交-issue)。
@@ -188,6 +232,8 @@ dsh 完全没装时，`--check` 不会报错退出，而是如实报告，输出
 
 只有 `koffi` 需要真正重新编译；另外两个走 N-API v9，能跨 Node 版本存活。第 2 步在绑定已存在时会直接跳过，所以重跑成本很低。
 
+第 9 步装的包就是 `node_modules` 下的普通目录，会和其余文件一起被整棵树抹掉。但它在 `$DSH_FIX_WORKDIR/sharp-wasm/` 里的暂存缓存能留下来，所以重跑时会把同一版本原样拷回来，完全不碰网络——直到 dsh 换用另一个 `sharp` 版本，那时这一步才会去取对应版本的 WebAssembly 构建。
+
 **第 6 步是最脆的一个。** 它往 `sherpa-onnx-node` 里写文件，而这个包是 npm 作为 voice-input bundle 的传递依赖装进来的。重装会抹掉编译好的 `.node` 和那几个 `.so`。更麻烦的是 dsh profile 用的是 pnpm，`pnpm install` 会重建整个 store，直接把你送回 `Local speech is unavailable for android-arm64`。任何依赖变动之后都重跑 `./install.sh --step 6`。构建产物留在 `$DSH_FIX_WORKDIR/sherpa-onnx/`，所以重建只是链接一步，不用重新下载——除非你把那个目录清了。
 
 如果更新后有某一步没打上，你会看到 `upstream layout changed`，而不是一个只打了一半的安装——补丁拒绝落到错误的位置。这正是该反馈的信号：说明你升到了哪个 dsh 版本、是哪一步拒绝的，按[提交 Issue](#提交-issue)的说明反馈。
@@ -199,7 +245,7 @@ dsh 完全没装时，`--check` 不会报错退出，而是如实报告，输出
 - Node.js ≥ 20，且头文件位于 `$PREFIX/include/node`（`pkg install nodejs` 已包含）。
 - **`ripgrep`**，供 `grep` 与 `glob` 工具使用。第 8 步用一个符号链接把 dsh 指向系统二进制；没有它这一步只会告警，两个工具仍然不可用。装法：`pkg install ripgrep`。
 - `clang`、`cmake`、`make`、`git`、`tar`、`curl`。**第 0 步会用 `pkg` 装好这些**，已装时自动跳过，所以一般不用手动装。之所以还列在这里，是因为如果你跳过第 0 步，第 1 步及之后会假定它们存在。其中 `cmake` 只在预编译的 koffi 绑定不能用时才需要——见下。
-- 第 2、6 步需要网络（克隆源码、下载 sherpa 发布包）；产物已存在时跳过。
+- 第 2、6、9 步需要网络（克隆/编译源码、下载 sherpa 发布包、下载约 9 MB 的 `@img/sharp-wasm32` 包）；三者在产物已存在时都会跳过。
 - 语音功能需要在 dsh profile 里启用 voice-input bundle。没启用时 `--check` 会显示 `6 speech package  not installed`。
 
 ## 排错
@@ -209,6 +255,10 @@ dsh 完全没装时，`--check` 不会报错退出，而是如实报告，输出
 **`no sandbox backend is usable on this host`**——Termux 既没有 bubblewrap，内核也没有启用 Landlock，所以 dsh 的 `workspace-write` 沙箱模式会拒绝执行命令。这**不是**本仓库能修的，属于运行参数选择：在这台机器上执行工具请用 `danger-full-access`。
 
 **dsh 自己的文件工具报 `EACCES ... cannot write <file>`**——与第 4 步同根因：dsh 的原子写入用了 `link()`。改用 `bash` 重定向写文件即可。第 4 步修的是会话与附件路径；通用的文件工具路径属于上游，此处未打补丁。
+
+**添加附件或读图时报 `EACCES: permission denied, open '/data/data'`**——问题出在附件存储的持久化 fsync 遍历，不是你 home 目录的权限问题。第 4 步的补丁修的就是它，重跑 `./install.sh` 即可。`--check` 会把 `4 attachment durability` 与 `link()` 回退分开报告，所以只打了一半的附件存储一眼就能看出来。
+
+**`Could not load the "sharp" module using the android-arm64 runtime`**——图片附件。第 9 步会安装 sharp 的 WebAssembly 兜底；如果它没跑过，或者被重装抹掉了，重跑 `./install.sh`（不要只跑 `--step 9`：同一次重装也会抹掉第 4 步的附件补丁，而第一次保存就要用到它）。`--check` 里对应 `9 image attachments`。
 
 **语音仍然报 `Local speech is unavailable for android-arm64`**——第 6 步没跑，或者被重装抹掉了。`./install.sh --check` 会给第 6 步列三行状态，任何一行是 `MISSING`/`NOT patched` 就重跑 `--step 6`。
 
@@ -276,9 +326,9 @@ pkg reinstall cmake     # 仅当 libc++ 是新的、cmake 自身损坏时
 
 ### 已知缺口
 
-`sharp` 那个失败**不是**本项目能修的，也与用 `--ignore-scripts` 安装无关。它属于"缺平台包"问题，没有补丁可打：这个包在运行时按平台解析一个只能由 npm 通过 `optionalDependencies` 提供的二进制，而 registry 上没有 Android 条目。
+**上面九层已经没有一层悬而未决。** 其中三处曾是"缺平台包"导致的失败，早期版本的这份 README 把它们列为上游未处理；如今这三处都有本地替代品，也都有对应的安装步骤。
 
-**`Could not load the "sharp" module using the android-arm64 runtime`**——图片附件。`sharp@0.35.x` 没有纯 JS 兜底，运行时会选 `@img/sharp-<platform>-<arch>` 包；这些包的 `os` 字段里都没有 `android`，于是 npm 全部跳过，只装上了 `@img/colour`。它由 `@deepseek-ai/dsh-attachment-local` 惰性调用，所以插件本身能加载，纯文本使用不受影响——只有第一次做图片归一化时抛错。本仓库无法修：要让图片链路可用，得把 `sharp` 或 libvips 针对 bionic 编出来，而上游没有这样的发布包。
+**`Could not load the "sharp" module ...`**——图片附件，已由第 9 步补上。`sharp@0.35.x` 会选一个 `@img/sharp-<platform>-<arch>` 原生绑定；registry 上发布了 25 个这样的包（15 个 binding 包 + 10 个 libvips 配套包），没有一个声明 `os: ["android"]`，所以 npm 一个都不装，树里只有 `@img/colour`。它由 `@deepseek-ai/dsh-attachment-local` 惰性调用，所以插件能加载，纯文本使用不受影响——第一次做图片操作时才抛错。第 9 步提供的是 sharp 自己文档里为没有原生构建的平台准备的兜底方案，即 WebAssembly 包 `@img/sharp-wasm32`，版本与已安装的 sharp 匹配。仍然没有**原生** Android 构建；那需要针对 bionic 编译 `sharp` 或 libvips，而上游不发布这样的包。
 
 另外两个同形状的缺口**已经修掉了**，由 step 8 负责（早期版本把它们记作"上游问题、此处不修"）：
 
@@ -286,7 +336,7 @@ pkg reinstall cmake     # 仅当 libc++ 是新的、cmake 自身损坏时
 
 **`write` 无法创建新文件**——`EACCES ... link '....tmpdir/xxx.tmp' -> 'xxx'`。`dsh-fs-local` 用一个同目录下的私有暂存文件发布写入，新文件走 `link(2)`；Android SELinux 直接拒绝硬链接，所以只要目标文件还不存在，`write` 就必然失败（改已有文件走的是 `rename(2)`，因此不受影响）。修法是捕获 `EACCES`/`EPERM` 后改用 `renameat2(RENAME_NOREPLACE)`：原子、冲突时报 `EEXIST`，与 `link`-when-absent 的契约一致，由 step 3 已经提供的 `system.node` 绑定实现。
 
-这两个都是惰性触发的：第一次写入 / 第一次搜索才暴露，启动时看不出问题。打补丁后需要重启 dsh 才生效。
+这三个都是惰性触发的：由第一次写入、第一次搜索、第一次图片操作触发，启动时看不出问题。运行中的 dsh 需要重启才能用上其中任何一个——第 4、8 步改的是已安装的 JavaScript，而第 9 步装的包，附件链路也只在第一次图片操作时才加载。
 
 ## 实现说明
 
@@ -310,6 +360,7 @@ scripts/
   step6-speech.sh           下载上游 Termux 发布包，编译语音 addon
   step7-terminal.sh         终端平台守卫 + 安装/编译 pty 绑定
   step8-platform-gaps.sh    ripgrep android 垫片 + fs-local 的 link() 回退
+  step9-vision.sh           安装 sharp 的 WebAssembly 兜底包（wasm32）
   build-require-builtin.sh  复刻上游 build.ts 的 clang 命令行
   build-sherpa-addon.sh     sherpa N-API 封装的 clang 命令行
   build-node-pty.sh         针对 bionic 编译 node-pty 的 pty.cc
@@ -323,7 +374,7 @@ src/node-pty/
   pty.node                  预编译 aarch64 pty 绑定，针对 bionic 编译
   pty.json                  上者的版本、架构与校验和
 patch/
-  patch-session-persistence.mjs   针对两个 JS 包的锚点补丁器
+  patch-session-persistence.mjs   link() 回退 + 附件持久化遍历
   patch-sherpa-addon.mjs          库预加载 + sensevoice 平台白名单
   patch-terminal-android.mjs      inspector 平台守卫 + node-pty 加载路径
   patch-platform-gaps.mjs         ripgrep android 垫片 + fs-local 的 link() 回退
@@ -333,7 +384,7 @@ docs/
 
 ## 状态
 
-已在 Termux / aarch64 / Node v26.4.0 / clang 21.1.8，dsh 0.2.1-rc.3、koffi 3.1.1、sherpa-onnx 1.13.8 上验证。
+已在 Termux / aarch64 / Node v26.4.0 / clang 21.1.8，dsh 0.2.1-rc.3、koffi 3.1.1、sharp 0.35.5（wasm32）、sherpa-onnx 1.13.8 上验证。
 
 **这不是官方支持路径。** 这里的一切都在修改已安装 npm 包内部的文件。升级即失效，上游测试不覆盖，dsh 内部实现也可能随时改变。
 
